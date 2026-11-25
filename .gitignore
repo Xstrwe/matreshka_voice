@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+/voices/
+/data/
+/feats/
+/runs/
+/eval/
+engine/src/*.o
+engine/*.a
+engine/mv_cli
+engine/arm/

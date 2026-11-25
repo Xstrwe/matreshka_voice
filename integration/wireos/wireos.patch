@@ -18,22 +18,8 @@ index 1459cfdc..fcfcf296 100644
    ${OPENCV_LIBS}
    ${FLATBUFFERS_LIBS}
    signal_essence
-diff --git a/animProcess/src/cozmoAnim/micData/micDataProcessor.cpp b/animProcess/src/cozmoAnim/micData/micDataProcessor.cpp
-index c67b1b9a..7f23519c 100644
---- a/animProcess/src/cozmoAnim/micData/micDataProcessor.cpp
-+++ b/animProcess/src/cozmoAnim/micData/micDataProcessor.cpp
-@@ -505,6 +505,9 @@ MicDirectionData MicDataProcessor::ProcessMicrophonesSE(const AudioUtil::AudioSa
-     _isSpeakerActive = false;
-   }
-   
-+  if (_speechRecognizerSystem) {
-+    _speechRecognizerSystem->SetSpeakerActive(_isSpeakerActive);
-+  }
-   const bool speakerStoppedPlaying = !_isSpeakerActive && _wasSpeakerActive;
-   _wasSpeakerActive = _isSpeakerActive;
-   
 diff --git a/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.cpp b/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.cpp
-index 237f6bcf..30a9dc2a 100644
+index 237f6bcf..7ba001eb 100644
 --- a/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.cpp
 +++ b/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.cpp
 @@ -18,6 +18,7 @@
@@ -101,7 +87,7 @@ index 237f6bcf..30a9dc2a 100644
    {
      if (info.result != SpeechRecognizerPicovoice::kAlexaKeyword) {
        callback(info);
-@@ -103,6 +130,23 @@ void SpeechRecognizerSystem::InitVector(TriggerWordDetectedCallback callback)
+@@ -103,6 +130,35 @@ void SpeechRecognizerSystem::InitVector(TriggerWordDetectedCallback callback)
    });
  }
  
@@ -115,17 +101,29 @@ index 237f6bcf..30a9dc2a 100644
 +  }
 +}
 +
-+void SpeechRecognizerSystem::SetSpeakerActive(bool active)
++namespace {
++  std::atomic<bool>     sRobotSpeaking{false};
++  std::atomic<uint64_t> sSpeakStart_ms{0};
++  std::atomic<uint64_t> sSpeakEnd_ms{0};
++  // Защита: если «конец речи» не пришёл (фраза отменена), через столько мс слушаем снова.
++  constexpr uint64_t kMaxSpeakMs = 60000;
++}
++
++void SpeechRecognizerSystem::SetRobotSpeaking(bool speaking)
 +{
-+  if (active) {
-+    _speakerLastActiveMs = NowMs();
++  const uint64_t now = NowMs();
++  if (speaking) {
++    sSpeakStart_ms = now;
++  } else {
++    sSpeakEnd_ms = now;
 +  }
++  sRobotSpeaking = speaking;
 +}
 +
  void SpeechRecognizerSystem::ToggleNotchDetector(bool active)
  {
    _notchDetectorActive = active;
-@@ -157,9 +201,21 @@ void SpeechRecognizerSystem::Update(const AudioUtil::AudioSample * audioData, un
+@@ -157,9 +213,25 @@ void SpeechRecognizerSystem::Update(const AudioUtil::AudioSample * audioData, un
    }
  
    // Update recognizer
@@ -133,14 +131,18 @@ index 237f6bcf..30a9dc2a 100644
 +  if (_victorTrigger && !_englishDisabled && (vadActive || _isAlexaActive)) {
      _victorTrigger->Update(audioData, audioDataLen);
    }
-+  const uint64_t lastSpeaker = _speakerLastActiveMs;
-+  const bool speakerRecent = (lastSpeaker != 0) && (NowMs() < lastSpeaker + kSpeakerHoldMs);
++  const uint64_t now = NowMs();
++  const bool speaking = sRobotSpeaking && (now < sSpeakStart_ms + kMaxSpeakMs);
++  const uint64_t speakEnd = sSpeakEnd_ms;
++  const bool speakerRecent = speaking || ((speakEnd != 0) && (now < speakEnd + kSpeakerHoldMs));
 +  if (_matreshkaTrigger && speakerRecent && !_matreshkaMuted) {
 +    // Начинаем с чистого листа, чтобы обрывок речи робота не сработал после паузы.
 +    _matreshkaTrigger->Reset();
 +    _matreshkaMuted = true;
-+  } else if (!speakerRecent) {
++    LOG_INFO("SpeechRecognizerMatreshka.Gate", "muted: robot is speaking");
++  } else if (!speakerRecent && _matreshkaMuted) {
 +    _matreshkaMuted = false;
++    LOG_INFO("SpeechRecognizerMatreshka.Gate", "listening again");
 +  }
 +  if (_matreshkaTrigger && vadActive && !speakerRecent) {
 +    _matreshkaTrigger->Update(audioData, audioDataLen);
@@ -149,7 +151,7 @@ index 237f6bcf..30a9dc2a 100644
  
  void SpeechRecognizerSystem::UpdateTriggerForLocale(const Util::Locale& newLocale)
 diff --git a/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.h b/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.h
-index 3615d4e0..d0917c1f 100644
+index 3615d4e0..7f918808 100644
 --- a/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.h
 +++ b/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.h
 @@ -34,6 +34,7 @@ namespace Anki {
@@ -165,14 +167,14 @@ index 3615d4e0..d0917c1f 100644
    // NOTE: Always call from the same thread
    void Update(const AudioUtil::AudioSample * audioData, unsigned int audioDataLen, bool vadActive);
 +
-+  // Сообщает, играет ли сейчас динамик робота (вызывается из потока обработки микрофонов).
-+  // Пока динамик играет и ещё kSpeakerHoldMs после, matreshka_voice не получает звук:
-+  // иначе робот будит сам себя собственной речью.
-+  void SetSpeakerActive(bool active);
++  // Вызывается из TextToSpeechComponent, когда робот начинает и заканчивает говорить.
++  // Пока робот говорит и ещё kSpeakerHoldMs после, matreshka_voice не получает звук:
++  // иначе робот будит сам себя собственной речью. Остальные звуки (анимации, моторы) не глушат.
++  static void SetRobotSpeaking(bool speaking);
    
    void UpdateTriggerForLocale(const Util::Locale& newLocale);
    
-@@ -94,6 +100,12 @@ private:
+@@ -94,6 +100,11 @@ private:
  
    const Anim::AnimContext*                    _context = nullptr;
    std::unique_ptr<SpeechRecognizerPicovoice>  _victorTrigger;
@@ -180,11 +182,38 @@ index 3615d4e0..d0917c1f 100644
 +  // true, если есть файл SpeechRecognizerMatreshka::kDisableEnglishPath и русская модель
 +  // загрузилась: тогда штатное английское слово не получает звук.
 +  bool                                        _englishDisabled = false;
-+  std::atomic<uint64_t>                       _speakerLastActiveMs{0};
 +  bool                                        _matreshkaMuted = false;
  
    TriggerWordDetectedCallback                 _alexaTrigger;
    Alexa*                                      _alexaComponent = nullptr;
+diff --git a/animProcess/src/cozmoAnim/textToSpeech/textToSpeechComponent.cpp b/animProcess/src/cozmoAnim/textToSpeech/textToSpeechComponent.cpp
+index 9f3df6f6..3838cc80 100644
+--- a/animProcess/src/cozmoAnim/textToSpeech/textToSpeechComponent.cpp
++++ b/animProcess/src/cozmoAnim/textToSpeech/textToSpeechComponent.cpp
+@@ -15,6 +15,7 @@
+ #include "textToSpeechProvider.h"
+ 
+ #include "cozmoAnim/animContext.h"
++#include "cozmoAnim/speechRecognizer/speechRecognizerSystem.h"
+ #include "cozmoAnim/animProcessMessages.h"
+ #include "cozmoAnim/audio/cozmoAudioController.h"
+ #include "cozmoAnim/robotDataLoader.h"
+@@ -798,6 +799,7 @@ void TextToSpeechComponent::OnAudioPlaying(const TTSID_t ttsID)
+ 
+   // Notify engine that TTS is now playing
+   SendAnimToEngine(ttsID, TextToSpeechState::Playing, GetDuration_ms(bundle));
++  SpeechRecognizerSystem::SetRobotSpeaking(true);   // заглушить русское слово на время речи
+ 
+ }
+ 
+@@ -806,6 +808,7 @@ void TextToSpeechComponent::OnAudioPlaying(const TTSID_t ttsID)
+ //
+ void TextToSpeechComponent::OnAudioComplete(const TTSID_t ttsID)
+ {
++  SpeechRecognizerSystem::SetRobotSpeaking(false);  // робот договорил: снова слушаем «Вектор»
+   LOG_DEBUG("TextToSpeechComponent.OnAudioComplete", "Finished playing ttsID %d", ttsID);
+   auto bundle = GetBundle(ttsID);
+   if (!bundle) {
 diff --git a/animProcess/src/cozmoAnim/textToSpeech/textToSpeechProvider_vicos.cpp b/animProcess/src/cozmoAnim/textToSpeech/textToSpeechProvider_vicos.cpp
 index 973d3bea..18fe8a0b 100644
 --- a/animProcess/src/cozmoAnim/textToSpeech/textToSpeechProvider_vicos.cpp
@@ -399,3 +428,368 @@ index 973d3bea..18fe8a0b 100644
    if (nullptr == _BAB_Obj) {
      LOG_ERROR("TextToSpeechProvider.GetFirstAudioData", "TTS SDK not initialized");
      return RESULT_FAIL_INVALID_OBJECT;
+diff --git a/engine/aiComponent/behaviorComponent/behaviors/timer/behaviorWallTimeCoordinator.cpp b/engine/aiComponent/behaviorComponent/behaviors/timer/behaviorWallTimeCoordinator.cpp
+index 902884e8..a68e090a 100644
+--- a/engine/aiComponent/behaviorComponent/behaviors/timer/behaviorWallTimeCoordinator.cpp
++++ b/engine/aiComponent/behaviorComponent/behaviors/timer/behaviorWallTimeCoordinator.cpp
+@@ -11,6 +11,7 @@
+ **/
+ 
+ 
++#include "engine/components/russianSpeech.h"
+ #include "engine/aiComponent/behaviorComponent/behaviors/timer/behaviorWallTimeCoordinator.h"
+ 
+ #include "clad/audio/audioSwitchTypes.h"
+@@ -225,15 +226,15 @@ void BehaviorWallTimeCoordinator::StartTTSGeneration()
+ // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+ std::string BehaviorWallTimeCoordinator::GetTTSStringForTime(struct tm& localTime, const bool clockIs24Hour)
+ {
+-  std::stringstream ss;
+-  if( clockIs24Hour ) {
+-    ss << std::put_time(&localTime, "%H:%M");
+-  }
+-  else {
+-    ss << std::put_time(&localTime, "%I:%M");
++  // Робот называет время по-русски: «Сейчас час ноль пять», «Сейчас ровно три».
++  int hour = localTime.tm_hour;
++  if (!clockIs24Hour) {
++    hour = hour % 12;
++    if (hour == 0) {
++      hour = 12;
++    }
+   }
+-
+-  return ss.str();
++  return RussianSpeech::TimeWords(hour, localTime.tm_min);
+ }
+ 
+ 
+diff --git a/engine/components/localeComponent.cpp b/engine/components/localeComponent.cpp
+index 1e79480e..5d89eca3 100644
+--- a/engine/components/localeComponent.cpp
++++ b/engine/components/localeComponent.cpp
+@@ -6,6 +6,8 @@
+  * Copyright: Anki, Inc. 2019
+  **/
+ 
++#include "engine/components/russianSpeech.h"
++#include <unordered_map>
+ #include "engine/components/localeComponent.h"
+ #include "engine/cozmoContext.h"
+ #include "engine/robot.h"
+@@ -154,8 +156,77 @@ bool LocaleComponent::LoadDirectory(const std::string & path)
+   return ok;
+ }
+ 
++
++namespace {
++  // Русский текст всех фраз робота из LocalizedStrings (BehaviorStrings.json, BlackJackStrings.json).
++  // Шаблоны: {0} — аргумент (числа словами), {0#m:один|два|пять} — число с согласованным словом.
++  const std::unordered_map<std::string, std::string> kRussianStrings = {
++    {"behavior.DevTest1", "Я Вектор"},
++    {"behavior.DevTest2", "Я {0}"},
++    {"BehaviorDisplayWeather.Cloudy", "{0#m:градус|градуса|градусов}, облачно"},
++    {"BehaviorDisplayWeather.Cold", "{0#m:градус|градуса|градусов}, холодно"},
++    {"BehaviorDisplayWeather.Rain", "{0#m:градус|градуса|градусов}, идёт дождь"},
++    {"BehaviorDisplayWeather.Snow", "{0#m:градус|градуса|градусов}, идёт снег"},
++    {"BehaviorDisplayWeather.Stars", "{0#m:градус|градуса|градусов}, звёздная ночь"},
++    {"BehaviorDisplayWeather.Sunny", "{0#m:градус|градуса|градусов}, солнечно"},
++    {"BehaviorDisplayWeather.Thunderstorms", "{0#m:градус|градуса|градусов}, гроза"},
++    {"BehaviorDisplayWeather.Windy", "{0#m:градус|градуса|градусов}, ветрено"},
++    {"BehaviorEnrollFace.HaveWeMetBefore", "Мы уже знакомы, {0}?"},
++    {"BehaviorEnrollFace.AlreadyKnowVowelName", "Я уже знаю, кто такой {0}"},
++    {"BehaviorEnrollFace.AlreadyKnowConsonantName", "Я уже знаю, кто такой {0}"},
++    {"BehaviorEnrollFace.AlreadyKnowYou", "Я тебя уже знаю!"},
++    {"BehaviorEnrollFace.AlreadyKnowFace", "Ты {0}, а не {1}"},
++    {"BehaviorHowOldAreYou.OneDay", "Один день!"},
++    {"BehaviorHowOldAreYou.SomeDays", "{0#m:день|дня|дней}!"},
++    {"BehaviorHowOldAreYou.OneMonth", "Один месяц!"},
++    {"BehaviorHowOldAreYou.AndOneMonth", " и один месяц!"},
++    {"BehaviorHowOldAreYou.SomeMonths", "{0#m:месяц|месяца|месяцев}!"},
++    {"BehaviorHowOldAreYou.AndSomeMonths", " и {0#m:месяц|месяца|месяцев}!"},
++    {"BehaviorHowOldAreYou.OneYear", "Один год!"},
++    {"BehaviorHowOldAreYou.SomeYears", "{0#m:год|года|лет}!"},
++    {"BehaviorHowOldAreYou.OneYearAndMonth", "Один год"},
++    {"BehaviorHowOldAreYou.SomeYearsAndMonth", "{0#m:год|года|лет}"},
++    {"BehaviorKnowledgeGraphQuestion.Ready", "Слушаю"},
++    {"BehaviorLeaveAMessage.NoRecipient", "Я не расслышал имя"},
++    {"BehaviorLeaveAMessage.UnknownRecipient", "Я не знаю, кто такой {0}"},
++    {"BehaviorLeaveAMessage.MailboxFull", "Голосовой ящик переполнен"},
++    {"BehaviorPlaybackMessage.AnnounceSingle", "Одно сообщение для {0}"},
++    {"BehaviorPlaybackMessage.AnnouncePlural", "{1#n:сообщение|сообщения|сообщений} для {0}"},
++    {"BehaviorPlaybackMessage.NoRecipient", "Я не расслышал имя"},
++    {"BehaviorPlaybackMessage.NoMessages", "Для {0} сообщений нет"},
++    {"BehaviorSayName.DontKnow", "Я не знаю"},
++    {"DevTestPromptUser.VocalPrompt", "Проверка: скажи команду"},
++    {"DevTestPromptUser.VocalResponseToIntent", "Команда понятна"},
++    {"DevTestPromptUser.VocalResponseToBadIntent", "Команда не понятна"},
++    {"DevTestPromptUser.VocalReprompt", "Попробуй ещё раз"},
++    {"UserDefinedBehaviorTree.ConfirmNewBehavior", "Тебе нравится такая реакция?"},
++    {"BlackJack.DealerGoodLuck", "Удачи!"},
++    {"BlackJack.DealerScore", "{0}"},
++    {"BlackJack.DealerScoreBusted", "{0}. У дилера перебор."},
++    {"BlackJack.DealerScorePush", "{0}. Ничья."},
++    {"BlackJack.DealerScoreDealerWins", "{0}. Дилер выиграл!"},
++    {"BlackJack.DealerScorePlayerWins", "{0}. Ты выиграл!"},
++    {"BlackJack.DealerTwentyOne", "Двадцать одно!"},
++    {"BlackJack.DealerTurn", "Ход дилера!"},
++    {"BlackJack.DrawQuestion", "Ещё карту?"},
++    {"BlackJack.PlayQuestion", "Сыграем в блэкджек?"},
++    {"BlackJack.PlayAgainQuestion", "Сыграем ещё раз?"},
++    {"BlackJack.PlayerScore", "{0}"},
++    {"BlackJack.PlayerScoreBusted", "{0}. У тебя перебор!"},
++    {"BlackJack.PlayerTwentyOne", "Двадцать одно!"},
++    {"BlackJack.PlayerWinsBlackJack", "Блэкджек, ты выиграл!"},
++    {"BlackJack.PlayerWinsNaturalBlackJack", "Блэкджек!"},
++    {"BlackJack.PlayerWinsFiveCardCharlie", "Пять карт! Ты выиграл!"},
++  };
++}
++
+ std::string LocaleComponent::GetString(const std::string & stringID) const
+ {
++  // Робот говорит по-русски: русский текст из таблицы выше важнее загруженных файлов.
++  const auto ru = kRussianStrings.find(stringID);
++  if (ru != kRussianStrings.end()) {
++    return ru->second;
++  }
+   // Lock the map while we search for an entry
+   std::lock_guard<std::mutex> lock(_mutex);
+   const auto & pos = _map.find(stringID);
+@@ -168,19 +239,14 @@ std::string LocaleComponent::GetString(const std::string & stringID) const
+ std::string LocaleComponent::GetString(const std::string & stringID,
+                                        const std::string & arg0) const
+ {
+-  std::string s = GetString(stringID);
+-  Anki::Util::StringReplace(s, "{0}", arg0);
+-  return s;
++  return RussianSpeech::Format(GetString(stringID), {arg0});
+ }
+ 
+ std::string LocaleComponent::GetString(const std::string & stringID,
+                                        const std::string & arg0,
+                                        const std::string & arg1) const
+ {
+-  std::string s = GetString(stringID);
+-  Anki::Util::StringReplace(s, "{0}", arg0);
+-  Anki::Util::StringReplace(s, "{1}", arg1);
+-  return s;
++  return RussianSpeech::Format(GetString(stringID), {arg0, arg1});
+ 
+ }
+ 
+diff --git a/engine/components/russianSpeech.h b/engine/components/russianSpeech.h
+new file mode 100644
+index 00000000..f9460296
+--- /dev/null
++++ b/engine/components/russianSpeech.h
+@@ -0,0 +1,210 @@
++/**
++ * File: russianSpeech.h
++ *
++ * Русская речь робота: числа словами, согласование с существительными и время.
++ * Всё здесь — встроенные функции, чтобы не добавлять новых .cpp в списки сборки.
++ */
++#ifndef __Engine_Components_RussianSpeech_H__
++#define __Engine_Components_RussianSpeech_H__
++
++#include <cstdlib>
++#include <string>
++#include <vector>
++
++namespace Anki {
++namespace Vector {
++namespace RussianSpeech {
++
++// Род для числительных «один/одна/одно», «два/две».
++enum class Gender { Masculine, Feminine, Neuter };
++
++// 0 — форма для 1 (градус), 1 — для 2-4 (градуса), 2 — для 5-20 и 0 (градусов).
++inline int PluralIndex(long n)
++{
++  n = std::labs(n);
++  const long n100 = n % 100;
++  const long n10 = n % 10;
++  if (n100 >= 11 && n100 <= 14) {
++    return 2;
++  }
++  if (n10 == 1) {
++    return 0;
++  }
++  if (n10 >= 2 && n10 <= 4) {
++    return 1;
++  }
++  return 2;
++}
++
++// Числа от 0 до 999 словами (без слова «ноль» для 0 — его добавляет NumberWords).
++inline std::string HundredsWords(long n, Gender g)
++{
++  static const char* kHundreds[] = {"", "сто", "двести", "триста", "четыреста", "пятьсот",
++                                    "шестьсот", "семьсот", "восемьсот", "девятьсот"};
++  static const char* kTens[] = {"", "", "двадцать", "тридцать", "сорок", "пятьдесят",
++                                "шестьдесят", "семьдесят", "восемьдесят", "девяносто"};
++  static const char* kTeens[] = {"десять", "одиннадцать", "двенадцать", "тринадцать", "четырнадцать",
++                                 "пятнадцать", "шестнадцать", "семнадцать", "восемнадцать", "девятнадцать"};
++  static const char* kUnits[] = {"", "один", "два", "три", "четыре", "пять",
++                                 "шесть", "семь", "восемь", "девять"};
++  std::vector<std::string> parts;
++  if (n / 100 > 0) {
++    parts.push_back(kHundreds[n / 100]);
++  }
++  const long rest = n % 100;
++  if (rest >= 10 && rest <= 19) {
++    parts.push_back(kTeens[rest - 10]);
++  } else {
++    if (rest / 10 > 0) {
++      parts.push_back(kTens[rest / 10]);
++    }
++    const long u = rest % 10;
++    if (u == 1) {
++      parts.push_back(g == Gender::Feminine ? "одна" : (g == Gender::Neuter ? "одно" : "один"));
++    } else if (u == 2) {
++      parts.push_back(g == Gender::Feminine ? "две" : "два");
++    } else if (u > 0) {
++      parts.push_back(kUnits[u]);
++    }
++  }
++  std::string out;
++  for (const auto& p : parts) {
++    if (!out.empty()) {
++      out += " ";
++    }
++    out += p;
++  }
++  return out;
++}
++
++// Целое число словами: -5 -> «минус пять», 21 (жен.) -> «двадцать одна», до 999 999.
++inline std::string NumberWords(long n, Gender g = Gender::Masculine)
++{
++  if (n == 0) {
++    return "ноль";
++  }
++  std::string out;
++  if (n < 0) {
++    out = "минус ";
++    n = -n;
++  }
++  if (n >= 1000000) {
++    return out + std::to_string(n);
++  }
++  const long thousands = n / 1000;
++  const long rest = n % 1000;
++  if (thousands > 0) {
++    static const char* kThousand[] = {"тысяча", "тысячи", "тысяч"};
++    out += HundredsWords(thousands, Gender::Feminine) + " " + kThousand[PluralIndex(thousands)];
++    if (rest > 0) {
++      out += " ";
++    }
++  }
++  if (rest > 0) {
++    out += HundredsWords(rest, g);
++  }
++  return out;
++}
++
++// Число со словом в нужной форме: (3, градус/градуса/градусов) -> «три градуса».
++inline std::string CountWords(long n, Gender g, const std::string& one, const std::string& few, const std::string& many)
++{
++  const std::string* forms[] = {&one, &few, &many};
++  return NumberWords(n, g) + " " + *forms[PluralIndex(n)];
++}
++
++// Строка — целое число (с необязательным минусом)?
++inline bool ParseInt(const std::string& s, long& out)
++{
++  if (s.empty()) {
++    return false;
++  }
++  size_t i = (s[0] == '-') ? 1 : 0;
++  if (i == s.size()) {
++    return false;
++  }
++  for (size_t j = i; j < s.size(); j++) {
++    if (s[j] < '0' || s[j] > '9') {
++      return false;
++    }
++  }
++  out = std::strtol(s.c_str(), nullptr, 10);
++  return true;
++}
++
++// Время по-русски: «Сейчас час ноль пять», «Сейчас двенадцать пятьдесят семь»,
++// «Сейчас ровно три».
++inline std::string TimeWords(int hour, int minute)
++{
++  std::string h = (hour == 1) ? "час" : NumberWords(hour, Gender::Masculine);
++  if (minute == 0) {
++    return "Сейчас ровно " + h + ".";
++  }
++  std::string m = NumberWords(minute, Gender::Feminine);
++  if (minute < 10) {
++    m = "ноль " + m;
++  }
++  return "Сейчас " + h + " " + m + ".";
++}
++
++// Подставляет аргументы в русский шаблон.
++//   {0}            — аргумент как есть; целое число превращается в слова;
++//   {0#m:a|b|c}    — число словами с согласованным словом (m/f/n — род числительного).
++inline std::string Format(const std::string& tmpl, const std::vector<std::string>& args)
++{
++  std::string out;
++  size_t i = 0;
++  while (i < tmpl.size()) {
++    if (tmpl[i] == '{') {
++      const size_t close = tmpl.find('}', i);
++      if (close != std::string::npos) {
++        const std::string spec = tmpl.substr(i + 1, close - i - 1);
++        const size_t hash = spec.find('#');
++        const std::string idxStr = spec.substr(0, hash);
++        long idx = -1;
++        if (ParseInt(idxStr, idx) && idx >= 0 && idx < static_cast<long>(args.size())) {
++          const std::string& arg = args[static_cast<size_t>(idx)];
++          long n = 0;
++          const bool isNum = ParseInt(arg, n);
++          if (hash == std::string::npos) {
++            out += isNum ? NumberWords(n) : arg;
++          } else {
++            // Формат «g:one|few|many».
++            const std::string rest = spec.substr(hash + 1);
++            Gender g = Gender::Masculine;
++            std::string forms = rest;
++            if (rest.size() > 2 && rest[1] == ':') {
++              g = (rest[0] == 'f') ? Gender::Feminine : (rest[0] == 'n' ? Gender::Neuter : Gender::Masculine);
++              forms = rest.substr(2);
++            }
++            std::vector<std::string> f;
++            size_t start = 0;
++            while (true) {
++              const size_t bar = forms.find('|', start);
++              f.push_back(forms.substr(start, bar - start));
++              if (bar == std::string::npos) {
++                break;
++              }
++              start = bar + 1;
++            }
++            while (f.size() < 3) {
++              f.push_back(f.back());
++            }
++            out += isNum ? CountWords(n, g, f[0], f[1], f[2]) : (arg + " " + f[2]);
++          }
++          i = close + 1;
++          continue;
++        }
++      }
++    }
++    out += tmpl[i];
++    i++;
++  }
++  return out;
++}
++
++} // namespace RussianSpeech
++} // namespace Vector
++} // namespace Anki
++
++#endif

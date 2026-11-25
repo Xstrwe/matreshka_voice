@@ -21,13 +21,21 @@ gets it only while VAD is active. `SpeechRecognizerMatreshka` gets exactly the s
 
 The patch:
 - adds a `_matreshkaTrigger` member;
-- mutes matreshka_voice while the robot's speaker plays and for 700 ms after it (and resets the
-  engine), so the robot does not wake itself with its own voice. `MicDataProcessor` reports the
-  speaker state through `SpeechRecognizerSystem::SetSpeakerActive()`;
+- mutes matreshka_voice while the robot speaks through its TTS and for 700 ms after it (and resets
+  the engine), so the robot does not wake itself with its own voice. `TextToSpeechComponent`
+  reports speech start and end through `SpeechRecognizerSystem::SetRobotSpeaking()`. (The ALSA
+  sink's "speaker in use" flag is not usable for this: it stays true all the time, and gating on it
+  makes the wake word deaf.)
 - turns off the stock English wake word engine when `disable_english` exists next to the model and
   the model loaded: the English recognizer is not created at all, so it uses no CPU or memory;
 - adds an optional Russian voice for the robot's own phrases in `textToSpeechProvider_vicos.cpp`
   (enabled by a `tts_url` file, see `../wirepod/README.md`);
+- makes the robot's own phrases Russian where they are built, in `vic-engine`
+  (`libcozmo_engine.so`): `engine/components/russianSpeech.h` writes numbers, time and counts as
+  Russian words with the right noun forms (for example «Сейчас час ноль пять», «двадцать один
+  градус», «два градуса», «пять лет»); `LocaleComponent::GetString` returns built-in Russian text
+  for every behavior and BlackJack string; `BehaviorWallTimeCoordinator` says the time in Russian.
+  No translation step is involved;
 - creates it in `InitVector()` only if the model file exists;
 - feeds it in `Update()`;
 - stops it in the destructor;
@@ -52,7 +60,6 @@ commit as the robot's `/anki/etc/revision` so the binary matches the shared libr
 
 With `disable_english` present only «Вектор» wakes the robot; the English engine is not loaded.
 The flag is ignored if the model fails to load, so the robot never ends up with no wake word.
-To turn English back on: `rm .../matreshka_voice/disable_english && systemctl restart anki-robot.target`.
 
 ## Deploy (separate, manual step)
 
@@ -63,6 +70,10 @@ To turn English back on: `rm .../matreshka_voice/disable_english && systemctl re
    exit, so restart the whole target rather than only vic-anim.
 5. Remount `/` read-only only after the restart: while the old process still runs from the
    replaced file, `mount -o ro,remount /` fails with "mount point is busy".
+6. The Russian phrases live in `/anki/lib/libcozmo_engine.so` (`_build/vicos/Release/lib/`, built
+   with `ninja cozmo_engine`). Back it up, copy it the same way (owner `anki:anki`, mode 440) and
+   restart the target once. Do not restart the target twice within about 20 s: vic-anim can hang
+   on shutdown during start-up and the robot shows fault 914.
 
 ## Logs
 
@@ -85,6 +96,6 @@ stock vic-anim 49-54% of one core, with matreshka_voice 54-60% (about +6 points)
 
 ## Roll back
 
-- Fastest: `rm /data/data/com.anki.victor/persistent/matreshka_voice/model.mvw && systemctl restart vic-anim`.
-  The patched binary then behaves like the stock one.
-- Full: restore the backed-up `vic-anim` binary and restart.
+Restore the backed-up `vic-anim` and/or `libcozmo_engine.so` (same owner and mode), then restart
+`anki-robot.target` once. Keep a matreshka_voice build as the `vic-anim` backup if the robot
+should stay Russian-only: the stock binary brings back the English wake word.

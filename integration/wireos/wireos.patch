@@ -1,0 +1,93 @@
+--- a/animProcess/CMakeLists.txt
++++ b/animProcess/CMakeLists.txt
+@@ -7,6 +7,7 @@
+ include(flatbuffers)
+ include(opencv)
+ include(picovoice)
++include(matreshka_voice)
+ include(text2speech)
+ include(robot_core)
+ 
+@@ -55,6 +56,7 @@
+   libev
+   # vendor
+   pv_porcupine
++  matreshka_voice
+   ${OPENCV_LIBS}
+   ${FLATBUFFERS_LIBS}
+   signal_essence
+--- a/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.cpp
++++ b/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.cpp
+@@ -18,6 +18,7 @@
+ #include "cozmoAnim/animContext.h"
+ #include "cozmoAnim/micData/micDataSystem.h"
+ #include "speechRecognizerPicovoice.h"                        // swapped in Picovoice
++#include "speechRecognizerMatreshka.h"                        // matreshka_voice wake word
+ #include "cozmoAnim/micData/notchDetector.h"
+ #include "util/console/consoleInterface.h"
+ #include "util/environment/locale.h"
+@@ -78,6 +79,9 @@
+   if (_victorTrigger) {
+     _victorTrigger->Stop();
+   }
++  if (_matreshkaTrigger) {
++    _matreshkaTrigger->Stop();
++  }
+ 
+   // Best way to destroy Alexa recognizer and component
+   DisableAlexa();
+@@ -92,7 +96,7 @@
+ 
+   _victorTrigger = std::make_unique<SpeechRecognizerPicovoice>();
+   _victorTrigger->Init(true, true);
+-  _victorTrigger->SetCallback([callback=std::move(callback), this](const AudioUtil::SpeechRecognizerCallbackInfo& info)
++  _victorTrigger->SetCallback([callback, this](const AudioUtil::SpeechRecognizerCallbackInfo& info)
+   {
+     if (info.result != SpeechRecognizerPicovoice::kAlexaKeyword) {
+       callback(info);
+@@ -101,6 +105,17 @@
+       _alexaTrigger(info);
+     }
+   });
++
++  // Optional second trigger: matreshka_voice. Only active when a model file is installed
++  // (SpeechRecognizerMatreshka::kModelPath); delete the file and restart vic-anim to roll back.
++  if (SpeechRecognizerMatreshka::ModelInstalled()) {
++    auto mv = std::make_unique<SpeechRecognizerMatreshka>();
++    if (mv->Init()) {
++      mv->SetCallback(std::move(callback));
++      mv->Start();
++      _matreshkaTrigger = std::move(mv);
++    }
++  }
+ }
+ 
+ void SpeechRecognizerSystem::ToggleNotchDetector(bool active)
+@@ -160,6 +175,9 @@
+   if (_victorTrigger && (vadActive || _isAlexaActive)) {
+     _victorTrigger->Update(audioData, audioDataLen);
+   }
++  if (_matreshkaTrigger && vadActive) {
++    _matreshkaTrigger->Update(audioData, audioDataLen);
++  }
+ }
+ 
+ void SpeechRecognizerSystem::UpdateTriggerForLocale(const Util::Locale& newLocale)
+--- a/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.h
++++ b/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.h
+@@ -34,6 +34,7 @@
+     }
+     class NotchDetector;
+     class SpeechRecognizerPicovoice;
++    class SpeechRecognizerMatreshka;
+   }
+   namespace Util {
+     class Locale;
+@@ -94,6 +95,7 @@
+ 
+   const Anim::AnimContext*                    _context = nullptr;
+   std::unique_ptr<SpeechRecognizerPicovoice>  _victorTrigger;
++  std::unique_ptr<SpeechRecognizerMatreshka>  _matreshkaTrigger;
+ 
+   TriggerWordDetectedCallback                 _alexaTrigger;
+   Alexa*                                      _alexaComponent = nullptr;

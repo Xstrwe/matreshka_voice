@@ -1,0 +1,147 @@
+{
+ "description": "Recall on held-out real takes (7 spoken, 3 whispered; noisy/far: 5 variants per take) and false accepts per hour on the 2 h hard negative stream. Aggregate counts only.",
+ "synthetic_only_v3": [
+  {
+   "threshold": 0.3,
+   "normal_clean": "1/7",
+   "normal_noisy": "7/35",
+   "normal_far": "21/35",
+   "whisper_clean": "0/3",
+   "whisper_noisy": "0/15",
+   "whisper_far": "0/15",
+   "fa_per_hour": 590.03
+  },
+  {
+   "threshold": 0.4,
+   "normal_clean": "2/7",
+   "normal_noisy": "8/35",
+   "normal_far": "13/35",
+   "whisper_clean": "0/3",
+   "whisper_noisy": "0/15",
+   "whisper_far": "0/15",
+   "fa_per_hour": 420.16
+  },
+  {
+   "threshold": 0.5,
+   "normal_clean": "2/7",
+   "normal_noisy": "10/35",
+   "normal_far": "9/35",
+   "whisper_clean": "0/3",
+   "whisper_noisy": "0/15",
+   "whisper_far": "0/15",
+   "fa_per_hour": 294.76
+  },
+  {
+   "threshold": 0.6,
+   "normal_clean": "2/7",
+   "normal_noisy": "9/35",
+   "normal_far": "5/35",
+   "whisper_clean": "0/3",
+   "whisper_noisy": "0/15",
+   "whisper_far": "0/15",
+   "fa_per_hour": 213.33
+  },
+  {
+   "threshold": 0.7,
+   "normal_clean": "1/7",
+   "normal_noisy": "8/35",
+   "normal_far": "4/35",
+   "whisper_clean": "0/3",
+   "whisper_noisy": "0/15",
+   "whisper_far": "0/15",
+   "fa_per_hour": 144.88
+  },
+  {
+   "threshold": 0.8,
+   "normal_clean": "1/7",
+   "normal_noisy": "6/35",
+   "normal_far": "2/35",
+   "whisper_clean": "0/3",
+   "whisper_noisy": "0/15",
+   "whisper_far": "0/15",
+   "fa_per_hour": 86.93
+  },
+  {
+   "threshold": 0.9,
+   "normal_clean": "0/7",
+   "normal_noisy": "0/35",
+   "normal_far": "1/35",
+   "whisper_clean": "0/3",
+   "whisper_noisy": "0/15",
+   "whisper_far": "0/15",
+   "fa_per_hour": 36.97
+  }
+ ],
+ "fine_tuned_current": [
+  {
+   "threshold": 0.3,
+   "normal_clean": "4/7",
+   "normal_noisy": "20/35",
+   "normal_far": "26/35",
+   "whisper_clean": "2/3",
+   "whisper_noisy": "12/15",
+   "whisper_far": "11/15",
+   "fa_per_hour": 567.05
+  },
+  {
+   "threshold": 0.4,
+   "normal_clean": "4/7",
+   "normal_noisy": "19/35",
+   "normal_far": "26/35",
+   "whisper_clean": "2/3",
+   "whisper_noisy": "10/15",
+   "whisper_far": "11/15",
+   "fa_per_hour": 399.18
+  },
+  {
+   "threshold": 0.5,
+   "normal_clean": "3/7",
+   "normal_noisy": "18/35",
+   "normal_far": "25/35",
+   "whisper_clean": "2/3",
+   "whisper_noisy": "10/15",
+   "whisper_far": "11/15",
+   "fa_per_hour": 262.29
+  },
+  {
+   "threshold": 0.6,
+   "normal_clean": "3/7",
+   "normal_noisy": "14/35",
+   "normal_far": "23/35",
+   "whisper_clean": "2/3",
+   "whisper_noisy": "10/15",
+   "whisper_far": "10/15",
+   "fa_per_hour": 188.35
+  },
+  {
+   "threshold": 0.7,
+   "normal_clean": "2/7",
+   "normal_noisy": "9/35",
+   "normal_far": "23/35",
+   "whisper_clean": "2/3",
+   "whisper_noisy": "10/15",
+   "whisper_far": "10/15",
+   "fa_per_hour": 125.9
+  },
+  {
+   "threshold": 0.8,
+   "normal_clean": "2/7",
+   "normal_noisy": "6/35",
+   "normal_far": "17/35",
+   "whisper_clean": "2/3",
+   "whisper_noisy": "10/15",
+   "whisper_far": "10/15",
+   "fa_per_hour": 79.94
+  },
+  {
+   "threshold": 0.9,
+   "normal_clean": "1/7",
+   "normal_noisy": "5/35",
+   "normal_far": "11/35",
+   "whisper_clean": "2/3",
+   "whisper_noisy": "10/15",
+   "whisper_far": "7/15",
+   "fa_per_hour": 28.48
+  }
+ ]
+}

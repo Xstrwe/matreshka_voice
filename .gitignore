@@ -1,0 +1,25 @@
+__pycache__/
+*.pyc
+.venv/
+voices/
+data/
+feats/
+runs/
+eval/
+engine/src/*.o
+engine/*.a
+engine/mv_cli
+engine/arm/
+
+# audio, features and local data never go into the repository
+*.wav
+*.aac
+*.m4a
+*.mp3
+*.flac
+*.npy
+*.npz
+data/
+feats/
+!engine/tests/data/
+!engine/tests/data/sample.wav

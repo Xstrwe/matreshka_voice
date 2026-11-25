@@ -15,7 +15,8 @@ from model import WakeNet
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--train", required=True)
+    ap.add_argument("--train", required=True, nargs="+", help="one or more .npz feature files")
+    ap.add_argument("--init", help="run folder to fine-tune from (uses its last.pt and norm.npy)")
     ap.add_argument("--val", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--epochs", type=int, default=30)
@@ -28,10 +29,14 @@ def main():
     os.makedirs(a.out, exist_ok=True)
     dev = "mps" if torch.backends.mps.is_available() else "cpu"
 
-    tr = np.load(a.train)
-    Xtr, ytr = tr["X"].astype(np.float32), tr["y"]
-    mean = Xtr.reshape(-1, Xtr.shape[2]).mean(0)
-    std = Xtr.reshape(-1, Xtr.shape[2]).std(0) + 1e-5
+    parts = [np.load(f) for f in a.train]
+    Xtr = np.concatenate([p["X"] for p in parts]).astype(np.float32)
+    ytr = np.concatenate([p["y"] for p in parts])
+    if a.init:   # keep the original normalisation so the pretrained weights stay valid
+        mean, std = np.load(os.path.join(a.init, "norm.npy"))
+    else:
+        mean = Xtr.reshape(-1, Xtr.shape[2]).mean(0)
+        std = Xtr.reshape(-1, Xtr.shape[2]).std(0) + 1e-5
     np.save(os.path.join(a.out, "norm.npy"), np.stack([mean, std]))
     va = np.load(a.val)
     Xva, yva = va["X"].astype(np.float32), va["y"]
@@ -39,7 +44,10 @@ def main():
     Xtr_t, Xva_t = norm(Xtr), norm(Xva).to(dev)
     ytr_t, yva_t = torch.from_numpy(ytr), torch.from_numpy(yva).to(dev)
 
-    net = WakeNet().to(dev)
+    net = WakeNet()
+    if a.init:
+        net.load_state_dict(torch.load(os.path.join(a.init, "last.pt"), map_location="cpu"))
+    net = net.to(dev)
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=1e-3)
     steps = a.epochs * (len(Xtr_t) // a.batch)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=a.lr, total_steps=steps)

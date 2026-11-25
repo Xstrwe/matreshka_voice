@@ -80,8 +80,32 @@ def random_eq(x, rnd):
     return y
 
 
-def augment(x, rnd, noise_bank=None, p_noise=0.85, p_reverb=0.35, p_eq=0.5):
+def farfield(x, rnd):
+    """Rough robot-microphone simulation: distance (more reverb, less direct sound), a small
+    band-limited mic capsule, low-level motor/fan noise and a soft limiter."""
+    from scipy.signal import butter, lfilter
+    t60 = rnd.uniform(0.3, 0.9)
+    n = int(SR * t60)
+    t = np.arange(n) / SR
+    ir = rnd.standard_normal(n).astype(np.float32) * np.exp(-6.9 * t / t60).astype(np.float32)
+    ir[0] = rnd.uniform(0.5, 3.0)                       # weaker direct path = farther away
+    y = np.convolve(x, ir)[: len(x)]
+    b, a = butter(2, [rnd.uniform(150, 400) / (SR / 2), rnd.uniform(4000, 7000) / (SR / 2)], btype="band")
+    y = lfilter(b, a, y).astype(np.float32)
+    y = y * (rms(x) / (rms(y) + 1e-9))
+    tt = np.arange(len(y)) / SR
+    f = rnd.uniform(90, 300)
+    motor = sum(np.sin(2 * np.pi * f * h * tt + rnd.uniform(0, 6)) / h for h in range(1, 4)).astype(np.float32)
+    motor += 0.5 * colored_noise(len(y), rnd)
+    y = y + motor / (rms(motor) + 1e-9) * rms(y) * 10 ** (-rnd.uniform(10, 30) / 20)
+    return np.tanh(y * 2.0) / 2.0 if rnd.random() < 0.3 else y
+
+
+def augment(x, rnd, noise_bank=None, p_noise=0.85, p_reverb=0.35, p_eq=0.5, p_far=0.0):
     x = x.astype(np.float32)
+    if p_far and rnd.random() < p_far:
+        x = farfield(x, rnd)
+        p_reverb = 0.0
     if rnd.random() < p_eq:
         x = random_eq(x, rnd)
     if rnd.random() < p_reverb:

@@ -33,7 +33,7 @@ index c67b1b9a..7f23519c 100644
    _wasSpeakerActive = _isSpeakerActive;
    
 diff --git a/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.cpp b/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.cpp
-index 237f6bcf..6642010f 100644
+index 237f6bcf..30a9dc2a 100644
 --- a/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.cpp
 +++ b/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.cpp
 @@ -18,6 +18,7 @@
@@ -63,8 +63,37 @@ index 237f6bcf..6642010f 100644
  
    // Best way to destroy Alexa recognizer and component
    DisableAlexa();
-@@ -92,7 +98,7 @@ void SpeechRecognizerSystem::InitVector(TriggerWordDetectedCallback callback)
+@@ -85,14 +91,35 @@ SpeechRecognizerSystem::~SpeechRecognizerSystem()
  
+ void SpeechRecognizerSystem::InitVector(TriggerWordDetectedCallback callback)
+ {
+-  if (_victorTrigger) {
++  if (_victorTrigger || _matreshkaTrigger) {
+     LOG_WARNING("SpeechRecognizerSystem.InitVector", "Victor Recognizer is already running");
+     return;
+   }
+ 
++  // Русское слово matreshka_voice. Работает, только если файл модели есть и модель загрузилась
++  // (SpeechRecognizerMatreshka::kModelPath); удалите файл и перезапустите vic-anim для отката.
++  if (SpeechRecognizerMatreshka::ModelInstalled()) {
++    auto mv = std::make_unique<SpeechRecognizerMatreshka>();
++    if (mv->Init()) {
++      mv->SetCallback(callback);
++      mv->Start();
++      _matreshkaTrigger = std::move(mv);
++      // Английский движок не создаём вовсе, только если русская модель загрузилась
++      // и есть файл kDisableEnglishPath. Иначе английский остаётся запасным словом.
++      struct stat st;
++      _englishDisabled = (stat(SpeechRecognizerMatreshka::kDisableEnglishPath, &st) == 0);
++    }
++  }
++
++  if (_englishDisabled) {
++    LOG_WARNING("SpeechRecognizerSystem.InitVector", "english wake word disabled by %s, engine not loaded",
++                SpeechRecognizerMatreshka::kDisableEnglishPath);
++    return;
++  }
++
    _victorTrigger = std::make_unique<SpeechRecognizerPicovoice>();
    _victorTrigger->Init(true, true);
 -  _victorTrigger->SetCallback([callback=std::move(callback), this](const AudioUtil::SpeechRecognizerCallbackInfo& info)
@@ -72,30 +101,10 @@ index 237f6bcf..6642010f 100644
    {
      if (info.result != SpeechRecognizerPicovoice::kAlexaKeyword) {
        callback(info);
-@@ -101,6 +107,41 @@ void SpeechRecognizerSystem::InitVector(TriggerWordDetectedCallback callback)
-       _alexaTrigger(info);
-     }
+@@ -103,6 +130,23 @@ void SpeechRecognizerSystem::InitVector(TriggerWordDetectedCallback callback)
    });
-+
-+  // Optional second trigger: matreshka_voice. Only active when a model file is installed
-+  // (SpeechRecognizerMatreshka::kModelPath); delete the file and restart vic-anim to roll back.
-+  if (SpeechRecognizerMatreshka::ModelInstalled()) {
-+    auto mv = std::make_unique<SpeechRecognizerMatreshka>();
-+    if (mv->Init()) {
-+      mv->SetCallback(std::move(callback));
-+      mv->Start();
-+      _matreshkaTrigger = std::move(mv);
-+      // Английское слово выключаем, только если русская модель действительно загрузилась.
-+      struct stat st;
-+      _englishDisabled = (stat(SpeechRecognizerMatreshka::kDisableEnglishPath, &st) == 0);
-+      if (_englishDisabled) {
-+        LOG_WARNING("SpeechRecognizerSystem.InitVector", "english wake word disabled by %s",
-+                    SpeechRecognizerMatreshka::kDisableEnglishPath);
-+      }
-+    }
-+  }
-+}
-+
+ }
+ 
 +namespace {
 +  // Сколько ещё молчать после того, как динамик затих (хвост звука и задержка обработки).
 +  constexpr uint64_t kSpeakerHoldMs = 700;
@@ -111,10 +120,12 @@ index 237f6bcf..6642010f 100644
 +  if (active) {
 +    _speakerLastActiveMs = NowMs();
 +  }
- }
- 
++}
++
  void SpeechRecognizerSystem::ToggleNotchDetector(bool active)
-@@ -157,9 +198,21 @@ void SpeechRecognizerSystem::Update(const AudioUtil::AudioSample * audioData, un
+ {
+   _notchDetectorActive = active;
+@@ -157,9 +201,21 @@ void SpeechRecognizerSystem::Update(const AudioUtil::AudioSample * audioData, un
    }
  
    // Update recognizer
@@ -174,3 +185,217 @@ index 3615d4e0..d0917c1f 100644
  
    TriggerWordDetectedCallback                 _alexaTrigger;
    Alexa*                                      _alexaComponent = nullptr;
+diff --git a/animProcess/src/cozmoAnim/textToSpeech/textToSpeechProvider_vicos.cpp b/animProcess/src/cozmoAnim/textToSpeech/textToSpeechProvider_vicos.cpp
+index 973d3bea..18fe8a0b 100644
+--- a/animProcess/src/cozmoAnim/textToSpeech/textToSpeechProvider_vicos.cpp
++++ b/animProcess/src/cozmoAnim/textToSpeech/textToSpeechProvider_vicos.cpp
+@@ -33,6 +33,186 @@
+ // Log options
+ #define LOG_CHANNEL    "TextToSpeech"
+ 
++// ---------------------------------------------------------------------------------------------
++// Русский голос для фраз робота (matreshka_voice). Если есть файл kRemoteTtsUrlPath с адресом
++// вида http://192.168.8.127:8080/robot_tts, текст фразы уходит на wire-pod, тот переводит его
++// на русский и озвучивает. Ответ — сырой PCM 16 кГц, моно, 16 бит. При любой ошибке
++// (нет файла, сеть, таймаут, не 200) робот говорит штатным английским голосом Acapela.
++// Выключить: удалить файл (перезапуск не нужен, файл читается перед каждой фразой).
++// ---------------------------------------------------------------------------------------------
++#include <arpa/inet.h>
++#include <fcntl.h>
++#include <netdb.h>
++#include <sys/select.h>
++#include <sys/socket.h>
++#include <sys/time.h>
++#include <unistd.h>
++#include <algorithm>
++#include <cctype>
++#include <cerrno>
++#include <cstdlib>
++#include <cstring>
++#include <fstream>
++#include <vector>
++
++namespace {
++  constexpr const char* kRemoteTtsUrlPath =
++    "/data/data/com.anki.victor/persistent/matreshka_voice/tts_url";
++  constexpr int kRemoteTtsConnectTimeout_ms = 1500;
++  constexpr int kRemoteTtsReadTimeout_s = 20;
++  constexpr int kRemoteTtsSampleRate = 16000;
++
++  // Процентное кодирование текста для строки запроса.
++  std::string UrlEncode(const std::string& in)
++  {
++    static const char* hex = "0123456789ABCDEF";
++    std::string out;
++    for (unsigned char c : in) {
++      if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
++        out += static_cast<char>(c);
++      } else {
++        out += '%';
++        out += hex[c >> 4];
++        out += hex[c & 15];
++      }
++    }
++    return out;
++  }
++
++  // Разбирает http://host:port/path. Только http, без TLS: wire-pod в той же локальной сети.
++  bool ParseUrl(const std::string& url, std::string& host, int& port, std::string& path)
++  {
++    const std::string prefix = "http://";
++    if (url.compare(0, prefix.size(), prefix) != 0) {
++      return false;
++    }
++    const std::string rest = url.substr(prefix.size());
++    const size_t slash = rest.find('/');
++    const std::string hostport = rest.substr(0, slash);
++    path = (slash == std::string::npos) ? "/" : rest.substr(slash);
++    const size_t colon = hostport.find(':');
++    host = hostport.substr(0, colon);
++    port = (colon == std::string::npos) ? 80 : atoi(hostport.c_str() + colon + 1);
++    return !host.empty() && port > 0 && port < 65536;
++  }
++
++  // Подключение с таймаутом: неблокирующий connect + select.
++  int ConnectWithTimeout(const std::string& host, int port)
++  {
++    struct addrinfo hints;
++    memset(&hints, 0, sizeof(hints));
++    hints.ai_family = AF_INET;
++    hints.ai_socktype = SOCK_STREAM;
++    struct addrinfo* res = nullptr;
++    if (getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) != 0 || res == nullptr) {
++      return -1;
++    }
++    int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
++    if (fd < 0) {
++      freeaddrinfo(res);
++      return -1;
++    }
++    const int flags = fcntl(fd, F_GETFL, 0);
++    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
++    int rc = connect(fd, res->ai_addr, res->ai_addrlen);
++    freeaddrinfo(res);
++    if (rc < 0 && errno != EINPROGRESS) {
++      close(fd);
++      return -1;
++    }
++    if (rc < 0) {
++      fd_set wfds;
++      FD_ZERO(&wfds);
++      FD_SET(fd, &wfds);
++      struct timeval tv { kRemoteTtsConnectTimeout_ms / 1000, (kRemoteTtsConnectTimeout_ms % 1000) * 1000 };
++      int err = 0;
++      socklen_t len = sizeof(err);
++      if (select(fd + 1, nullptr, &wfds, nullptr, &tv) <= 0 ||
++          getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) != 0 || err != 0) {
++        close(fd);
++        return -1;
++      }
++    }
++    fcntl(fd, F_SETFL, flags);
++    struct timeval rtv { kRemoteTtsReadTimeout_s, 0 };
++    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &rtv, sizeof(rtv));
++    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &rtv, sizeof(rtv));
++    return fd;
++  }
++
++  // Запрашивает озвучку у wire-pod. true и samples (16 кГц), если всё получилось.
++  bool FetchRemoteTts(const std::string& text, std::vector<int16_t>& samples)
++  {
++    std::ifstream f(kRemoteTtsUrlPath);
++    std::string url;
++    if (!f.is_open() || !std::getline(f, url)) {
++      return false;
++    }
++    while (!url.empty() && isspace(static_cast<unsigned char>(url.back()))) {
++      url.pop_back();
++    }
++    std::string host, path;
++    int port = 0;
++    if (!ParseUrl(url, host, port, path)) {
++      LOG_WARNING("TextToSpeechProvider.RemoteTts", "bad url in %s", kRemoteTtsUrlPath);
++      return false;
++    }
++    const int fd = ConnectWithTimeout(host, port);
++    if (fd < 0) {
++      LOG_WARNING("TextToSpeechProvider.RemoteTts", "connect failed, using stock voice");
++      return false;
++    }
++    const std::string req = "GET " + path + "?text=" + UrlEncode(text) + " HTTP/1.0\r\nHost: " + host +
++                            "\r\nConnection: close\r\n\r\n";
++    if (send(fd, req.data(), req.size(), 0) != static_cast<ssize_t>(req.size())) {
++      close(fd);
++      return false;
++    }
++    std::string resp;
++    char buf[8192];
++    ssize_t n;
++    while ((n = recv(fd, buf, sizeof(buf), 0)) > 0) {
++      resp.append(buf, static_cast<size_t>(n));
++      if (resp.size() > 16 * 1024 * 1024) {
++        break;
++      }
++    }
++    close(fd);
++    const size_t hdrEnd = resp.find("\r\n\r\n");
++    const bool ok200 = (resp.compare(0, 12, "HTTP/1.1 200") == 0) || (resp.compare(0, 12, "HTTP/1.0 200") == 0);
++    if (n < 0 || hdrEnd == std::string::npos || !ok200) {
++      LOG_WARNING("TextToSpeechProvider.RemoteTts", "no audio from wire-pod, using stock voice");
++      return false;
++    }
++    const size_t bodyLen = (resp.size() - hdrEnd - 4) / 2;
++    if (bodyLen < 160) {
++      return false;
++    }
++    samples.resize(bodyLen);
++    memcpy(samples.data(), resp.data() + hdrEnd + 4, bodyLen * 2);
++    return true;
++  }
++
++  // Линейная передискретизация 16 кГц -> частота голоса Acapela (обычно 22050 Гц),
++  // чтобы дальше по цепочке звук ничем не отличался от штатного.
++  void Resample(const std::vector<int16_t>& in, int inRate, int outRate, std::vector<int16_t>& out)
++  {
++    if (inRate == outRate || outRate <= 0 || in.empty()) {
++      out = in;
++      return;
++    }
++    const size_t outLen = static_cast<size_t>(static_cast<double>(in.size()) * outRate / inRate);
++    out.resize(outLen);
++    for (size_t i = 0; i < outLen; i++) {
++      const double pos = static_cast<double>(i) * inRate / outRate;
++      const size_t i0 = std::min(static_cast<size_t>(pos), in.size() - 1);
++      const size_t i1 = std::min(i0 + 1, in.size() - 1);
++      const double frac = pos - static_cast<double>(i0);
++      out[i] = static_cast<int16_t>(in[i0] * (1.0 - frac) + in[i1] * frac);
++    }
++  }
++}
++
+ namespace Anki {
+ namespace Vector {
+ namespace TextToSpeech {
+@@ -262,6 +442,22 @@ Result TextToSpeechProviderImpl::GetFirstAudioData(const std::string & text,
+             durationScalar,
+             pitchScalar);
+ 
++  // Сначала пробуем русский голос через wire-pod (см. FetchRemoteTts выше). Звук дальше идёт
++  // по штатной цепочке, поэтому к нему применяется та же обработка «робот-голоса» (Wwise).
++  {
++    std::vector<int16_t> pcm16k;
++    if (FetchRemoteTts(text, pcm16k)) {
++      const int outRate = (_BAB_voicefreq > 0) ? static_cast<int>(_BAB_voicefreq) : kRemoteTtsSampleRate;
++      std::vector<int16_t> pcm;
++      Resample(pcm16k, kRemoteTtsSampleRate, outRate, pcm);
++      data.Init(outRate, 1);
++      data.AppendSamples(reinterpret_cast<const AudioUtil::AudioSample*>(pcm.data()), pcm.size());
++      done = true;
++      LOG_WARNING("TextToSpeechProvider.RemoteTts", "remote voice, %zu samples at %d Hz", pcm.size(), outRate);
++      return RESULT_OK;
++    }
++  }
++
+   if (nullptr == _BAB_Obj) {
+     LOG_ERROR("TextToSpeechProvider.GetFirstAudioData", "TTS SDK not initialized");
+     return RESULT_FAIL_INVALID_OBJECT;

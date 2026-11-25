@@ -24,8 +24,10 @@ The patch:
 - mutes matreshka_voice while the robot's speaker plays and for 700 ms after it (and resets the
   engine), so the robot does not wake itself with its own voice. `MicDataProcessor` reports the
   speaker state through `SpeechRecognizerSystem::SetSpeakerActive()`;
-- turns off the stock English wake word when `disable_english` exists next to the model and the
-  model loaded;
+- turns off the stock English wake word engine when `disable_english` exists next to the model and
+  the model loaded: the English recognizer is not created at all, so it uses no CPU or memory;
+- adds an optional Russian voice for the robot's own phrases in `textToSpeechProvider_vicos.cpp`
+  (enabled by a `tts_url` file, see `../wirepod/README.md`);
 - creates it in `InitVector()` only if the model file exists;
 - feeds it in `Update()`;
 - stops it in the destructor;
@@ -48,7 +50,7 @@ commit as the robot's `/anki/etc/revision` so the binary matches the shared libr
 /data/data/com.anki.victor/persistent/matreshka_voice/disable_english   # optional, empty file
 ```
 
-With `disable_english` present only «Вектор» wakes the robot; the English keyword gets no audio.
+With `disable_english` present only «Вектор» wakes the robot; the English engine is not loaded.
 The flag is ignored if the model fails to load, so the robot never ends up with no wake word.
 To turn English back on: `rm .../matreshka_voice/disable_english && systemctl restart anki-robot.target`.
 

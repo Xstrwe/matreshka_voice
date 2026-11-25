@@ -1,6 +1,8 @@
+diff --git a/animProcess/CMakeLists.txt b/animProcess/CMakeLists.txt
+index 1459cfdc..fcfcf296 100644
 --- a/animProcess/CMakeLists.txt
 +++ b/animProcess/CMakeLists.txt
-@@ -7,6 +7,7 @@
+@@ -7,6 +7,7 @@ include(aubio)
  include(flatbuffers)
  include(opencv)
  include(picovoice)
@@ -8,7 +10,7 @@
  include(text2speech)
  include(robot_core)
  
-@@ -55,6 +56,7 @@
+@@ -55,6 +56,7 @@ target_link_libraries(victor_anim
    libev
    # vendor
    pv_porcupine
@@ -16,6 +18,22 @@
    ${OPENCV_LIBS}
    ${FLATBUFFERS_LIBS}
    signal_essence
+diff --git a/animProcess/src/cozmoAnim/micData/micDataProcessor.cpp b/animProcess/src/cozmoAnim/micData/micDataProcessor.cpp
+index c67b1b9a..7f23519c 100644
+--- a/animProcess/src/cozmoAnim/micData/micDataProcessor.cpp
++++ b/animProcess/src/cozmoAnim/micData/micDataProcessor.cpp
+@@ -505,6 +505,9 @@ MicDirectionData MicDataProcessor::ProcessMicrophonesSE(const AudioUtil::AudioSa
+     _isSpeakerActive = false;
+   }
+   
++  if (_speechRecognizerSystem) {
++    _speechRecognizerSystem->SetSpeakerActive(_isSpeakerActive);
++  }
+   const bool speakerStoppedPlaying = !_isSpeakerActive && _wasSpeakerActive;
+   _wasSpeakerActive = _isSpeakerActive;
+   
+diff --git a/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.cpp b/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.cpp
+index 237f6bcf..6642010f 100644
 --- a/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.cpp
 +++ b/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.cpp
 @@ -18,6 +18,7 @@
@@ -26,7 +44,16 @@
  #include "cozmoAnim/micData/notchDetector.h"
  #include "util/console/consoleInterface.h"
  #include "util/environment/locale.h"
-@@ -78,6 +79,9 @@
+@@ -25,6 +26,8 @@
+ 
+ #include <fcntl.h>
+ #include <unistd.h>
++#include <sys/stat.h>
++#include <chrono>
+ 
+ 
+ namespace Anki {
+@@ -78,6 +81,9 @@ SpeechRecognizerSystem::~SpeechRecognizerSystem()
    if (_victorTrigger) {
      _victorTrigger->Stop();
    }
@@ -36,7 +63,7 @@
  
    // Best way to destroy Alexa recognizer and component
    DisableAlexa();
-@@ -92,7 +96,7 @@
+@@ -92,7 +98,7 @@ void SpeechRecognizerSystem::InitVector(TriggerWordDetectedCallback callback)
  
    _victorTrigger = std::make_unique<SpeechRecognizerPicovoice>();
    _victorTrigger->Init(true, true);
@@ -45,7 +72,7 @@
    {
      if (info.result != SpeechRecognizerPicovoice::kAlexaKeyword) {
        callback(info);
-@@ -101,6 +105,17 @@
+@@ -101,6 +107,41 @@ void SpeechRecognizerSystem::InitVector(TriggerWordDetectedCallback callback)
        _alexaTrigger(info);
      }
    });
@@ -58,24 +85,63 @@
 +      mv->SetCallback(std::move(callback));
 +      mv->Start();
 +      _matreshkaTrigger = std::move(mv);
++      // Английское слово выключаем, только если русская модель действительно загрузилась.
++      struct stat st;
++      _englishDisabled = (stat(SpeechRecognizerMatreshka::kDisableEnglishPath, &st) == 0);
++      if (_englishDisabled) {
++        LOG_WARNING("SpeechRecognizerSystem.InitVector", "english wake word disabled by %s",
++                    SpeechRecognizerMatreshka::kDisableEnglishPath);
++      }
 +    }
++  }
++}
++
++namespace {
++  // Сколько ещё молчать после того, как динамик затих (хвост звука и задержка обработки).
++  constexpr uint64_t kSpeakerHoldMs = 700;
++  uint64_t NowMs()
++  {
++    return std::chrono::duration_cast<std::chrono::milliseconds>(
++      std::chrono::steady_clock::now().time_since_epoch()).count();
++  }
++}
++
++void SpeechRecognizerSystem::SetSpeakerActive(bool active)
++{
++  if (active) {
++    _speakerLastActiveMs = NowMs();
 +  }
  }
  
  void SpeechRecognizerSystem::ToggleNotchDetector(bool active)
-@@ -160,6 +175,9 @@
-   if (_victorTrigger && (vadActive || _isAlexaActive)) {
+@@ -157,9 +198,21 @@ void SpeechRecognizerSystem::Update(const AudioUtil::AudioSample * audioData, un
+   }
+ 
+   // Update recognizer
+-  if (_victorTrigger && (vadActive || _isAlexaActive)) {
++  if (_victorTrigger && !_englishDisabled && (vadActive || _isAlexaActive)) {
      _victorTrigger->Update(audioData, audioDataLen);
    }
-+  if (_matreshkaTrigger && vadActive) {
++  const uint64_t lastSpeaker = _speakerLastActiveMs;
++  const bool speakerRecent = (lastSpeaker != 0) && (NowMs() < lastSpeaker + kSpeakerHoldMs);
++  if (_matreshkaTrigger && speakerRecent && !_matreshkaMuted) {
++    // Начинаем с чистого листа, чтобы обрывок речи робота не сработал после паузы.
++    _matreshkaTrigger->Reset();
++    _matreshkaMuted = true;
++  } else if (!speakerRecent) {
++    _matreshkaMuted = false;
++  }
++  if (_matreshkaTrigger && vadActive && !speakerRecent) {
 +    _matreshkaTrigger->Update(audioData, audioDataLen);
 +  }
  }
  
  void SpeechRecognizerSystem::UpdateTriggerForLocale(const Util::Locale& newLocale)
+diff --git a/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.h b/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.h
+index 3615d4e0..d0917c1f 100644
 --- a/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.h
 +++ b/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.h
-@@ -34,6 +34,7 @@
+@@ -34,6 +34,7 @@ namespace Anki {
      }
      class NotchDetector;
      class SpeechRecognizerPicovoice;
@@ -83,11 +149,28 @@
    }
    namespace Util {
      class Locale;
-@@ -94,6 +95,7 @@
+@@ -74,6 +75,11 @@ public:
+   // Update recognizer audio
+   // NOTE: Always call from the same thread
+   void Update(const AudioUtil::AudioSample * audioData, unsigned int audioDataLen, bool vadActive);
++
++  // Сообщает, играет ли сейчас динамик робота (вызывается из потока обработки микрофонов).
++  // Пока динамик играет и ещё kSpeakerHoldMs после, matreshka_voice не получает звук:
++  // иначе робот будит сам себя собственной речью.
++  void SetSpeakerActive(bool active);
+   
+   void UpdateTriggerForLocale(const Util::Locale& newLocale);
+   
+@@ -94,6 +100,12 @@ private:
  
    const Anim::AnimContext*                    _context = nullptr;
    std::unique_ptr<SpeechRecognizerPicovoice>  _victorTrigger;
 +  std::unique_ptr<SpeechRecognizerMatreshka>  _matreshkaTrigger;
++  // true, если есть файл SpeechRecognizerMatreshka::kDisableEnglishPath и русская модель
++  // загрузилась: тогда штатное английское слово не получает звук.
++  bool                                        _englishDisabled = false;
++  std::atomic<uint64_t>                       _speakerLastActiveMs{0};
++  bool                                        _matreshkaMuted = false;
  
    TriggerWordDetectedCallback                 _alexaTrigger;
    Alexa*                                      _alexaComponent = nullptr;

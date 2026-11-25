@@ -21,6 +21,11 @@ gets it only while VAD is active. `SpeechRecognizerMatreshka` gets exactly the s
 
 The patch:
 - adds a `_matreshkaTrigger` member;
+- mutes matreshka_voice while the robot's speaker plays and for 700 ms after it (and resets the
+  engine), so the robot does not wake itself with its own voice. `MicDataProcessor` reports the
+  speaker state through `SpeechRecognizerSystem::SetSpeakerActive()`;
+- turns off the stock English wake word when `disable_english` exists next to the model and the
+  model loaded;
 - creates it in `InitVector()` only if the model file exists;
 - feeds it in `Update()`;
 - stops it in the destructor;
@@ -40,7 +45,12 @@ commit as the robot's `/anki/etc/revision` so the binary matches the shared libr
 ```
 /data/data/com.anki.victor/persistent/matreshka_voice/model.mvw   # models/vektor_ru.mvw
 /data/data/com.anki.victor/persistent/matreshka_voice/threshold   # optional, e.g. 0.7
+/data/data/com.anki.victor/persistent/matreshka_voice/disable_english   # optional, empty file
 ```
+
+With `disable_english` present only «Вектор» wakes the robot; the English keyword gets no audio.
+The flag is ignored if the model fails to load, so the robot never ends up with no wake word.
+To turn English back on: `rm .../matreshka_voice/disable_english && systemctl restart anki-robot.target`.
 
 ## Deploy (separate, manual step)
 

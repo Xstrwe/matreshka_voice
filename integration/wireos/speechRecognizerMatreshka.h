@@ -36,6 +36,10 @@ public:
     "/data/data/com.anki.victor/persistent/matreshka_voice/model.mvw";
   static constexpr const char* kThresholdPath =
     "/data/data/com.anki.victor/persistent/matreshka_voice/threshold";
+  // Если этот файл есть (содержимое не важно), штатное английское «Hey Vector» не слушается.
+  // Включить обратно: удалить файл и перезапустить anki-robot.target.
+  static constexpr const char* kDisableEnglishPath =
+    "/data/data/com.anki.victor/persistent/matreshka_voice/disable_english";
 
   // true, если файл модели есть и не пустой. Init() возвращает false (и распознаватель
   // остаётся выключенным), если файла нет или он испорчен.

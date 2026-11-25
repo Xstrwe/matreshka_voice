@@ -1,7 +1,9 @@
-"""Export a trained WakeNet to the matreshka_voice weights blob (.mvw) and a C header.
+"""Экспорт обученной WakeNet в файл весов matreshka_voice (.mvw) и, по желанию, в заголовок C.
 
-Blob layout (little endian): 4-byte magic "MVW1", 16 x uint32/float32 header words, then float32 data.
-See engine/include/matreshka_voice.h for the exact order.
+Формат файла (little endian): 4 байта "MVW1", 16 слов заголовка uint32/float32, затем
+веса float32. Точный порядок описан в engine/include/matreshka_voice.h.
+BatchNorm при экспорте вклеивается в свёртки (model.fold_bn), а нормализация
+признаков (mean, 1/std) кладётся в начало весов — на роботе она делается в C.
 """
 import argparse
 import os
@@ -14,6 +16,7 @@ import model as M
 
 
 def tensors(net, norm):
+    """Список массивов весов в порядке, который ждёт движок на C."""
     net.eval()
     mean, std = norm
     w0, b0 = M.fold_bn(net.conv0.weight, net.bn0)
@@ -26,6 +29,7 @@ def tensors(net, norm):
 
 
 def header(threshold):
+    """68 байт заголовка: магия, версия 1, размеры сети, порог и 4 резервных нуля."""
     words = [1, M.N_MELS, M.WINDOW, M.K, M.C0, M.C1, M.C2, M.C3, *M.STRIDES]
     return b"MVW1" + struct.pack("<11I", *words) + struct.pack("<f", threshold) + struct.pack("<4I", 0, 0, 0, 0)
 
@@ -41,9 +45,11 @@ def main():
     net = M.WakeNet()
     net.load_state_dict(torch.load(os.path.join(a.run, a.ckpt), map_location="cpu"))
     norm = np.load(os.path.join(a.run, "norm.npy"))
+    # norm.npy — средние и стандартные отклонения признаков, посчитанные при обучении.
     blob = header(a.threshold) + b"".join(t.tobytes() for t in tensors(net, norm))
     open(a.out, "wb").write(blob)
     print(f"wrote {a.out}: {len(blob)} bytes, {(len(blob) - 68) // 4} floats")
+    # Заголовок C со всем файлом в виде массива байтов — чтобы встроить модель прямо в программу.
     if a.header:
         name = os.path.splitext(os.path.basename(a.out))[0].replace("-", "_")
         with open(a.header, "w") as f:

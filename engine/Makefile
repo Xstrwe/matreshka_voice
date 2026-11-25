@@ -1,7 +1,9 @@
-# matreshka_voice engine. Plain C99, depends only on libc and libm.
-#   make                 host build (library + mv_cli)
-#   make test            parity and smoke tests (needs the Python venv, see ../README.md)
-#   make armv7           cross build for Vector (Cortex-A7, NEON), needs an arm-linux-gnueabi(hf) gcc or clang
+# Движок matreshka_voice. Чистый C99, зависит только от libc и libm.
+#   make                 сборка для этой машины (библиотека + mv_cli)
+#   make test            проверка совпадения с Python и смоук-тесты (нужно окружение Python, см. ../README.md)
+#   make armv7           кросс-сборка для Vector (Cortex-A7, NEON), нужен gcc или clang для arm-linux-gnueabi(hf)
+# ?= задаёт значение, только если переменную не передали снаружи (например, CC=clang make).
+# override += добавляет наши флаги, даже если CFLAGS указали в командной строке.
 CC      ?= cc
 AR      ?= ar
 CFLAGS  ?= -O2
@@ -14,17 +16,22 @@ LIB = libmatreshka_voice.a
 
 all: $(LIB) mv_cli
 
+# Статическая библиотека — архив объектных файлов. В правилах: $@ — цель,
+# $^ — все зависимости, $< — первая зависимость.
 $(LIB): $(OBJ)
 	$(AR) rcs $@ $^
 
+# Любой .c пересобирается и при изменении заголовков.
 src/%.o: src/%.c include/matreshka_voice.h src/mv_internal.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 mv_cli: cli/mv_cli.c $(LIB)
 	$(CC) $(CFLAGS) $(LDFLAGS) $< $(LIB) $(LDLIBS) -o $@
 
-# Vector's APQ8009 is a quad Cortex-A7. WireOS userland uses the soft-float calling
-# convention with hardware FP/NEON (armv7a-linux-gnueabi, -mfloat-abi=softfp).
+# В Vector стоит APQ8009 — четыре ядра Cortex-A7. Программы WireOS передают float
+# через целые регистры (soft-float ABI), но считают на аппаратном FPU/NEON
+# (armv7a-linux-gnueabi, -mfloat-abi=softfp). Собираем статически, чтобы не зависеть
+# от библиотек на роботе.
 ARM_CC     ?= arm-linux-gnueabi-gcc
 ARM_CFLAGS ?= -O2 -mcpu=cortex-a7 -mfpu=neon-vfpv4 -mfloat-abi=softfp -ffast-math
 armv7:

@@ -1,9 +1,10 @@
-"""Evaluate a model on held-out real takes and a negative stream, through the C engine.
+"""Проверка модели на отложенных настоящих дублях и на потоке негативов, через движок на C.
 
-usage: python train/eval_real.py --model M.mvw --cli engine/mv_cli --takes DIR/eval \
+Запуск: python train/eval_real.py --model M.mvw --cli engine/mv_cli --takes DIR/eval \
            --neg-stream eval/neg_stream.wav --out OUTDIR [--thresholds 0.5,0.7,0.8,0.9]
-Conditions per take: clean (as recorded, with a quiet room floor), noisy (coloured noise / hum, 5-20 dB SNR, 5 variants)
-and far (robot-microphone simulation, 5 variants). Only aggregate numbers are printed.
+Условия для каждого дубля: clean (как записано, с тихим фоном комнаты), noisy (цветной шум
+или гул, сигнал/шум 5–20 дБ, 5 вариантов) и far (имитация микрофона робота, 5 вариантов).
+Печатаются только общие числа; временные записи удаляются после проверки.
 """
 import argparse
 import glob
@@ -20,6 +21,7 @@ SR = 16000
 
 
 def stream(takes, rnd, cond):
+    """Склеить дубли с паузами 1,2–2 с в условиях cond; вернуть звук и моменты конца слов."""
     parts, ends, t = [], [], 0
     for clip in takes:
         gap = np.zeros(int(rnd.uniform(1.2, 2.0) * SR), np.float32)
@@ -31,7 +33,7 @@ def stream(takes, rnd, cond):
         ends.append(t / SR)
     parts.append(np.zeros(2 * SR, np.float32))
     x = np.concatenate(parts)
-    if True:   # "clean" still gets a quiet room floor (40 dB below speech): real mics never output digital silence
+    if True:   # даже в «clean» добавляем тихий фон на 40 дБ ниже речи: настоящий микрофон не выдаёт цифровую тишину
         lvl = rms(np.concatenate(takes))
         nz = colored_noise(len(x), rnd)
         snr = {"clean": 40.0, "noisy": rnd.uniform(5, 20), "far": rnd.uniform(15, 30)}[cond]
@@ -39,6 +41,7 @@ def stream(takes, rnd, cond):
     return np.clip(x, -1, 1), ends
 
 
+# Запустить mv_cli и вернуть времена срабатываний (строки "detection <секунды> ...").
 def detections(cli, model, wav, thr):
     out = subprocess.run([cli, model, wav, "-t", str(thr)], check=True, capture_output=True, text=True).stdout
     return [float(l.split()[1]) for l in out.splitlines() if l.startswith("detection")]
@@ -79,6 +82,7 @@ def main():
                     if s != style or c != cond:
                         continue
                     d = np.array(detections(a.cli, a.model, fn, thr))
+                    # Попадание: срабатывание от 0,4 с до конца слова до 1 с после.
                     hit += sum(1 for e in ends if len(d) and np.any((d > e - 0.4) & (d < e + 1.0)))
                     tot += len(ends)
                 if tot:
@@ -87,7 +91,7 @@ def main():
         row["fa_per_hour"] = round(fa / neg_h, 2)
         rows.append(row)
         print(json.dumps(row), flush=True)
-    for _, _, fn, _ in files:   # do not keep derived audio around
+    for _, _, fn, _ in files:   # не оставляем производные записи на диске
         os.remove(fn)
     json.dump(rows, open(os.path.join(a.out, "results.json"), "w"), indent=1)
 

@@ -1,7 +1,9 @@
-"""Check that the C engine matches the Python reference.
+"""Проверка, что движок на C считает то же, что эталон на Python.
 
-usage: python engine/tests/parity.py MODEL.mvw INPUT.wav [path/to/mv_cli]
-Exits non-zero when features or scores differ more than the tolerance.
+Запуск: python engine/tests/parity.py MODEL.mvw INPUT.wav [путь/к/mv_cli]
+Сравнивает признаки log-mel и оценки сети для каждого запуска. Выходит с ошибкой,
+если расхождение больше допуска (признаки 1e-2, оценки 1e-3). Небольшая разница
+есть всегда: C и numpy складывают числа в разном порядке и с разной точностью.
 """
 import os
 import subprocess
@@ -22,6 +24,8 @@ def main():
     cli = sys.argv[3] if len(sys.argv) > 3 else os.path.join(HERE, "..", "mv_cli")
     x, sr = sf.read(wav, dtype="int16")
     assert sr == 16000
+    # Эталонные признаки из Python, затем те же признаки и оценки из движка на C.
+    # Порог -t 2 недостижим: срабатывания не нужны, нужны только оценки.
     ref = logmel(x.astype(np.float32) / 32768.0)
     with tempfile.TemporaryDirectory() as td:
         ff, sc = os.path.join(td, "f.bin"), os.path.join(td, "s.txt")
@@ -30,11 +34,14 @@ def main():
         cf = np.fromfile(ff, dtype=np.float32).reshape(-1, ref.shape[1])
         scores = np.loadtxt(sc, ndmin=2)
     assert cf.shape == ref.shape, (cf.shape, ref.shape)
-    # compare where the signal is not near-silent (log of tiny power is ill-conditioned)
+    # Сравниваем только там, где есть сигнал: логарифм почти нулевой мощности
+    # очень чувствителен к крошечным различиям и ничего не говорит о качестве.
     mask = ref > -10
     fdiff = np.abs(cf - ref)[mask].max() if mask.any() else 0.0
     m = MvwModel(model)
     sdiff = 0.0
+    # Для каждого запуска сети в C берём то же окно признаков и считаем
+    # оценку эталонной моделью на numpy (train/mvw_ref.py).
     for fi, s in scores:
         fi = int(fi)
         r = m.score(cf[fi - m.window + 1: fi + 1].astype(np.float64))

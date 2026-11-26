@@ -1,25 +1,36 @@
-"""Augmentation and window building (numpy only)."""
+"""Аугментация звука и сборка окон для обучения (только numpy и scipy).
+
+Синтетическая речь слишком «чистая»: одна громкость, ни шума, ни эха. Здесь звук
+случайно портится так, как его испортила бы настоящая комната и микрофон робота,
+чтобы сеть научилась узнавать слово в любых условиях.
+Все функции принимают rnd (numpy Generator), чтобы результат можно было повторить.
+"""
 import numpy as np
 
 SR = 16000
-WIN_SAMPLES = 400 + 99 * 160     # exactly 100 feature frames
+WIN_SAMPLES = 400 + 99 * 160     # ровно 100 кадров признаков: первый кадр + 99 шагов
 
 
 def speed(x, rnd, lo=0.85, hi=1.2):
-    """Resample-based speed perturbation: shifts tempo, pitch and formants together."""
+    """Изменение скорости через передискретизацию: темп, высота голоса и форманты
+сдвигаются вместе — грубая имитация других дикторов."""
     from fractions import Fraction
     from scipy.signal import resample_poly
+    # resample_poly работает с целыми up/down, поэтому множитель приближаем дробью.
     f = Fraction(rnd.uniform(lo, hi)).limit_denominator(40)
     if f.numerator == f.denominator:
         return x
     return resample_poly(x, f.denominator, f.numerator).astype(np.float32)
 
 
+# Среднеквадратичный уровень сигнала (громкость). 1e-12 защищает от корня из нуля.
 def rms(x):
     return float(np.sqrt(np.mean(x ** 2) + 1e-12))
 
 
 def colored_noise(n, rnd):
+    """Шум длины n с единичным RMS одного из четырёх видов: 0 — белый, 1 — розовый
+    (спектр ~1/sqrt(f)), 2 — «красный» (~1/f), 3 — гул сети и моторов с гармониками."""
     kind = rnd.integers(0, 4)
     w = rnd.standard_normal(n).astype(np.float32)
     if kind == 0:
@@ -28,7 +39,7 @@ def colored_noise(n, rnd):
     f = np.arange(len(spec)) + 1.0
     spec = spec / (f ** (0.5 if kind == 1 else 1.0)) if kind < 3 else spec
     x = np.fft.irfft(spec, n).astype(np.float32)
-    if kind == 3:  # mains hum + harmonics, motor-like whine
+    if kind == 3:  # гул сети 50/60 Гц с гармониками или вой мотора
         t = np.arange(n) / SR
         base = rnd.choice([50.0, 60.0, rnd.uniform(80, 400)])
         x = sum(np.sin(2 * np.pi * base * h * t + rnd.uniform(0, 6)) / h for h in range(1, 6)).astype(np.float32)
@@ -37,17 +48,21 @@ def colored_noise(n, rnd):
 
 
 def reverb(x, rnd):
+    """Искусственное эхо комнаты: свёртка с импульсной характеристикой из шума,
+    затухающего на 60 дБ за t60 секунд. Громкость после эха возвращается к исходной."""
     t60 = rnd.uniform(0.15, 0.7)
     n = int(SR * t60)
     t = np.arange(n) / SR
     ir = rnd.standard_normal(n).astype(np.float32) * np.exp(-6.9 * t / t60).astype(np.float32)
-    ir[0] = 1.0 / rnd.uniform(0.3, 1.0)
+    ir[0] = 1.0 / rnd.uniform(0.3, 1.0)     # прямой звук от говорящего
     y = np.convolve(x, ir)[: len(x)]
     return y * (rms(x) / (rms(y) + 1e-9))
 
 
 def place(clip, total, end_min, end_max, rnd):
-    """Place clip inside a zero buffer so its end lies in [end_min, end_max] * total."""
+    """Положить клип в буфер из нулей длины total так, чтобы его конец оказался
+между долями end_min и end_max буфера. Детектор срабатывает в конце слова,
+поэтому важно, где именно в окне заканчивается слово."""
     out = np.zeros(total, dtype=np.float32)
     clip = clip[: total]
     end = int(rnd.uniform(end_min, end_max) * total)
@@ -56,13 +71,15 @@ def place(clip, total, end_min, end_max, rnd):
     return out
 
 
+# Обрезать тишину по краям: всё до первого и после последнего отсчёта громче thr.
 def trim(x, thr=0.01):
     idx = np.where(np.abs(x) > thr)[0]
     return x[idx[0]: idx[-1] + 1] if len(idx) else x
 
 
 def random_eq(x, rnd):
-    """Random 2nd-order peaking/shelving-like coloration to mimic different mics and rooms."""
+    """Случайная окраска звука фильтром второго порядка (пиковый эквалайзер по формулам
+RBJ Audio EQ Cookbook), чтобы имитировать разные микрофоны и комнаты."""
     from scipy.signal import lfilter
     f0 = rnd.uniform(150, 5000)
     gain_db = rnd.uniform(-12, 12)
@@ -73,7 +90,7 @@ def random_eq(x, rnd):
     b = [1 + alpha * a, -2 * np.cos(w0), 1 - alpha * a]
     den = [1 + alpha / a, -2 * np.cos(w0), 1 - alpha / a]
     y = lfilter(b, den, x).astype(np.float32)
-    if rnd.random() < 0.3:   # band-limit like a cheap mic
+    if rnd.random() < 0.3:   # иногда срезаем низы и верха, как дешёвый микрофон
         from scipy.signal import butter
         bb, aa = butter(2, [rnd.uniform(80, 300) / (SR / 2), rnd.uniform(3500, 7500) / (SR / 2)], btype="band")
         y = lfilter(bb, aa, y).astype(np.float32)
@@ -81,14 +98,15 @@ def random_eq(x, rnd):
 
 
 def farfield(x, rnd):
-    """Rough robot-microphone simulation: distance (more reverb, less direct sound), a small
-    band-limited mic capsule, low-level motor/fan noise and a soft limiter."""
+    """Грубая имитация микрофона робота: расстояние (больше эха, слабее прямой звук),
+    маленький микрофон с узкой полосой, тихий шум моторов и вентилятора и мягкий
+    ограничитель громкости."""
     from scipy.signal import butter, lfilter
     t60 = rnd.uniform(0.3, 0.9)
     n = int(SR * t60)
     t = np.arange(n) / SR
     ir = rnd.standard_normal(n).astype(np.float32) * np.exp(-6.9 * t / t60).astype(np.float32)
-    ir[0] = rnd.uniform(0.5, 3.0)                       # weaker direct path = farther away
+    ir[0] = rnd.uniform(0.5, 3.0)                       # чем слабее прямой звук, тем «дальше» говорящий
     y = np.convolve(x, ir)[: len(x)]
     b, a = butter(2, [rnd.uniform(150, 400) / (SR / 2), rnd.uniform(4000, 7000) / (SR / 2)], btype="band")
     y = lfilter(b, a, y).astype(np.float32)
@@ -97,11 +115,19 @@ def farfield(x, rnd):
     f = rnd.uniform(90, 300)
     motor = sum(np.sin(2 * np.pi * f * h * tt + rnd.uniform(0, 6)) / h for h in range(1, 4)).astype(np.float32)
     motor += 0.5 * colored_noise(len(y), rnd)
+    # Шум мотора на 10–30 дБ тише речи.
     y = y + motor / (rms(motor) + 1e-9) * rms(y) * 10 ** (-rnd.uniform(10, 30) / 20)
+    # tanh — мягкое ограничение: громкие пики сглаживаются, как в перегруженном тракте.
     return np.tanh(y * 2.0) / 2.0 if rnd.random() < 0.3 else y
 
 
 def augment(x, rnd, noise_bank=None, p_noise=0.85, p_reverb=0.35, p_eq=0.5, p_far=0.0):
+    """Полная цепочка порчи звука. Каждый шаг включается с заданной вероятностью p_*.
+
+    Порядок: «дальний микрофон» (тогда обычное эхо не добавляем — оно уже есть),
+    эквалайзер, эхо, случайная громкость речи, шум с отношением сигнал/шум 0–30 дБ.
+    noise_bank — список настоящих фоновых записей; иначе шум генерируется.
+    """
     x = x.astype(np.float32)
     if p_far and rnd.random() < p_far:
         x = farfield(x, rnd)
@@ -110,10 +136,11 @@ def augment(x, rnd, noise_bank=None, p_noise=0.85, p_reverb=0.35, p_eq=0.5, p_fa
         x = random_eq(x, rnd)
     if rnd.random() < p_reverb:
         x = reverb(x, rnd)
-    x = x / (rms(x) + 1e-9) * 10 ** (rnd.uniform(-32, -12) / 20)   # speech level
+    x = x / (rms(x) + 1e-9) * 10 ** (rnd.uniform(-32, -12) / 20)   # громкость речи от -32 до -12 дБ
     if rnd.random() < p_noise:
         if noise_bank is not None and len(noise_bank) and rnd.random() < 0.4:
             nb = noise_bank[rnd.integers(0, len(noise_bank))]
+            # Случайный кусок фоновой записи; np.resize повторяет его, если он короче.
             s = rnd.integers(0, max(1, len(nb) - len(x)))
             nz = np.resize(nb[s: s + len(x)], len(x))
             nz = nz / (rms(nz) + 1e-9)
@@ -121,4 +148,4 @@ def augment(x, rnd, noise_bank=None, p_noise=0.85, p_reverb=0.35, p_eq=0.5, p_fa
             nz = colored_noise(len(x), rnd)
         snr = rnd.uniform(0, 30)
         x = x + nz * (rms(x) * 10 ** (-snr / 20))
-    return np.clip(x, -1, 1)
+    return np.clip(x, -1, 1)    # не выходим за диапазон 16-битного звука

@@ -1,0 +1,96 @@
+diff --git a/chipper/pkg/wirepod/preqs/intent.go b/chipper/pkg/wirepod/preqs/intent.go
+index 364d63e..68e5d3a 100755
+--- a/chipper/pkg/wirepod/preqs/intent.go
++++ b/chipper/pkg/wirepod/preqs/intent.go
+@@ -53,7 +53,7 @@ func (s *Server) ProcessIntent(req *vtt.IntentRequest) (*vtt.IntentResponse, err
+ 				logger.Println("LLM error: " + err.Error())
+ 				logger.LogUI("LLM error: " + err.Error())
+ 				ttr.IntentPass(req, "intent_system_unmatched", transcribedText, map[string]string{"": ""}, false)
+-				ttr.KGSim(req.Device, "There was an error getting a response from the L L M. Check the logs in the web interface.")
++				ttr.KGSim(req.Device, "Не получилось получить ответ. Спроси ещё раз, пожалуйста.")
+ 			}
+ 			logger.Println("Bot " + speechReq.Device + " request served.")
+ 			return nil, nil
+diff --git a/chipper/pkg/wirepod/preqs/intent_graph.go b/chipper/pkg/wirepod/preqs/intent_graph.go
+index 7c34cf9..9c1d7a1 100755
+--- a/chipper/pkg/wirepod/preqs/intent_graph.go
++++ b/chipper/pkg/wirepod/preqs/intent_graph.go
+@@ -84,7 +84,7 @@ func (s *Server) ProcessIntentGraph(req *vtt.IntentGraphRequest) (*vtt.IntentGra
+ 					logger.Println("LLM error: " + err.Error())
+ 					logger.LogUI("LLM error: " + err.Error())
+ 					ttr.IntentPass(req, "intent_system_unmatched", transcribedText, map[string]string{"": ""}, false)
+-					ttr.KGSim(req.Device, "There was an error getting a response from the L L M. Check the logs in the web interface.")
++					ttr.KGSim(req.Device, "Не получилось получить ответ. Спроси ещё раз, пожалуйста.")
+ 				}
+ 				logger.Println("Bot " + speechReq.Device + " request served.")
+ 				return nil, nil
+diff --git a/chipper/pkg/wirepod/preqs/knowledgegraph.go b/chipper/pkg/wirepod/preqs/knowledgegraph.go
+index 1d0a9fa..a6b22dd 100755
+--- a/chipper/pkg/wirepod/preqs/knowledgegraph.go
++++ b/chipper/pkg/wirepod/preqs/knowledgegraph.go
+@@ -71,7 +71,7 @@ func streamingKG(req *vtt.KnowledgeGraphRequest, speechReq sr.SpeechRequest) str
+ 	// have him start "thinking" right after the text is transcribed
+ 	transcribedText, err := sttHandler(speechReq)
+ 	if err != nil {
+-		return "There was an error."
++		return "Произошла ошибка."
+ 	}
+ 	kg := pb.KnowledgeGraphResponse{
+ 		Session:     req.Session,
+@@ -95,7 +95,7 @@ func KgRequest(req *vtt.KnowledgeGraphRequest, speechReq sr.SpeechRequest) strin
+ 			return houndifyKG(speechReq)
+ 		}
+ 	}
+-	return "Knowledge graph is not enabled. This can be enabled in the web interface."
++	return "База знаний выключена. Её можно включить в веб-интерфейсе."
+ }
+ 
+ func (s *Server) ProcessKnowledgeGraph(req *vtt.KnowledgeGraphRequest) (*vtt.KnowledgeGraphResponse, error) {
+diff --git a/chipper/pkg/wirepod/ttr/intentparam.go b/chipper/pkg/wirepod/ttr/intentparam.go
+index 584a4a0..5a4a58d 100755
+--- a/chipper/pkg/wirepod/ttr/intentparam.go
++++ b/chipper/pkg/wirepod/ttr/intentparam.go
+@@ -192,7 +192,7 @@ func ParamChecker(req interface{}, intent string, speechText string, botSerial s
+ 				if err != nil {
+ 					logger.Println("error connecting to vector:", err)
+ 				} else {
+-					sayText(vec, "You must add a face in the web interface. It cannot be done via voice by default.")
++					sayText(vec, "Лицо добавляется в веб-интерфейсе. Голосом этого сделать нельзя.")
+ 				}
+ 			}
+ 			logger.Println("You must add a face via the web interface (Bot Settings -> Connect -> Faces).")
+@@ -326,10 +326,10 @@ func ParamChecker(req interface{}, intent string, speechText string, botSerial s
+ 	if DoWeatherError {
+ 		if vars.APIConfig.Weather.Enable {
+ 			logger.Println("The weather API is not configured properly.")
+-			KGSim(botSerial, "The weather API is not configured properly. Please check the wire pod logs for more details.")
++			KGSim(botSerial, "Погода настроена неправильно. Подробности в журнале.")
+ 		} else {
+ 			logger.Println("The weather API is not configured.")
+-			KGSim(botSerial, "The weather API is not configured.")
++			KGSim(botSerial, "Погода не настроена.")
+ 		}
+ 	}
+ }
+diff --git a/chipper/pkg/wirepod/ttr/kgsim.go b/chipper/pkg/wirepod/ttr/kgsim.go
+index 32811e3..51683b7 100644
+--- a/chipper/pkg/wirepod/ttr/kgsim.go
++++ b/chipper/pkg/wirepod/ttr/kgsim.go
+@@ -285,7 +285,7 @@ func StreamingKGSim(req interface{}, esn string, transcribedText string, isKG bo
+ 				}
+ 				stop <- true
+ 				time.Sleep(time.Second / 3)
+-				KGSim(esn, "There was an error getting data from the L. L. M.")
++				KGSim(esn, "Не получилось получить ответ.")
+ 			}
+ 			return "", err
+ 		}
+@@ -310,7 +310,7 @@ func StreamingKGSim(req interface{}, esn string, transcribedText string, isKG bo
+ 						}
+ 						stop <- true
+ 						time.Sleep(time.Second / 3)
+-						KGSim(esn, "There was an error getting data from the L. L. M.")
++						KGSim(esn, "Не получилось получить ответ.")
+ 					}
+ 					break
+ 				}

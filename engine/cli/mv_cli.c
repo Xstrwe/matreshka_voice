@@ -1,16 +1,19 @@
-/* matreshka_voice command line test tool.
- * Copyright (c) 2026 Xstrwe. MIT License.
+/* matreshka_voice: утилита командной строки для проверки движка на файлах.
+ * Copyright (c) 2026 Xstrwe. Лицензия MIT.
  *
- * usage: mv_cli MODEL.mvw INPUT.(wav|raw) [options]
- *   -t THRESHOLD     detection threshold (default: from model)
- *   -e N             run the network every N frames (default 3)
- *   -s N             smoothing window in network runs (default 2)
- *   -r MS            refractory period in ms (default 1500)
- *   -c CHUNK         feed audio in chunks of CHUNK samples (default 512)
- *   --scores FILE    write "frame_index score" per network run
- *   --features FILE  write raw float32 log-mel features (n_frames x 40), not normalized
- *   --quiet          only print the summary line
- * Input: 16 kHz mono 16-bit PCM WAV, or headerless raw s16le.
+ * Запуск: mv_cli MODEL.mvw INPUT.(wav|raw) [параметры]
+ *   -t ПОРОГ         порог срабатывания (по умолчанию — из модели)
+ *   -e N             запускать сеть раз в N кадров (по умолчанию 3)
+ *   -s N             сглаживать по N запускам сети (по умолчанию 2)
+ *   -r МС            пауза после срабатывания в мс (по умолчанию 1500)
+ *   -c КУСОК         подавать звук кусками по КУСОК отсчётов (по умолчанию 512)
+ *   --scores ФАЙЛ    записать «номер_кадра оценка» для каждого запуска сети
+ *   --features ФАЙЛ  записать признаки log-mel как float32 (кадры × 40), без нормализации
+ *   --quiet          печатать только итоговую строку
+ * Вход: WAV 16 кГц, моно, 16 бит PCM, или «сырые» отсчёты s16le без заголовка.
+ *
+ * Утилита нужна для тестов: по --scores и --features Python-скрипты
+ * проверяют, что движок на C считает то же самое, что эталон на numpy.
  */
 #include "matreshka_voice.h"
 
@@ -19,6 +22,10 @@
 #include <string.h>
 #include <time.h>
 
+/* Прочитать WAV или «сырой» файл целиком в память. Возвращает массив
+ * отсчётов (освобождать через free) и пишет их число в *n_out.
+ * WAV устроен как цепочка «чанков»: 4 байта имени, 4 байта длины, данные.
+ * Нам нужны чанк "fmt " (формат звука) и "data" (сами отсчёты). */
 static int16_t *read_audio(const char *path, size_t *n_out)
 {
     FILE *fp = fopen(path, "rb");
@@ -27,11 +34,14 @@ static int16_t *read_audio(const char *path, size_t *n_out)
     long size;
     size_t n = 0;
     if (!fp) { fprintf(stderr, "cannot open %s\n", path); return NULL; }
+    /* Размер файла понадобится, если это не WAV, а «сырые» данные. */
     fseek(fp, 0, SEEK_END); size = ftell(fp); fseek(fp, 0, SEEK_SET);
+    /* Заголовок WAV: "RIFF", размер, "WAVE". memcmp возвращает 0 при совпадении. */
     if (size >= 12 && fread(h, 1, 12, fp) == 12 && !memcmp(h, "RIFF", 4) && !memcmp(h + 8, "WAVE", 4)) {
         unsigned char ch[8];
         int fmt_ok = 0;
         while (fread(ch, 1, 8, fp) == 8) {
+            /* Длина чанка — 32-битное little endian число из байтов 4..7. */
             unsigned long len = ch[4] | (ch[5] << 8) | ((unsigned long)ch[6] << 16) | ((unsigned long)ch[7] << 24);
             if (!memcmp(ch, "fmt ", 4)) {
                 unsigned char f[16];
@@ -40,6 +50,7 @@ static int16_t *read_audio(const char *path, size_t *n_out)
                     int fmt = f[0] | (f[1] << 8), chans = f[2] | (f[3] << 8);
                     long rate = f[4] | (f[5] << 8) | ((long)f[6] << 16) | ((long)f[7] << 24);
                     int bits = f[14] | (f[15] << 8);
+                    /* 1 — обычный PCM, 0xFFFE — «расширенный» формат; принимаем только 16 кГц моно 16 бит. */
                     if ((fmt != 1 && fmt != 0xFFFE) || chans != 1 || rate != 16000 || bits != 16) {
                         fprintf(stderr, "%s: need 16 kHz mono 16-bit PCM (got fmt %d, %d ch, %ld Hz, %d bit)\n",
                                 path, fmt, chans, rate, bits);
@@ -47,9 +58,11 @@ static int16_t *read_audio(const char *path, size_t *n_out)
                     }
                     fmt_ok = 1;
                 }
+                /* Пропускаем остаток чанка; чанки выровнены по чётной длине, отсюда (len & 1). */
                 fseek(fp, (long)(len - 16 + (len & 1)), SEEK_CUR);
             } else if (!memcmp(ch, "data", 4)) {
                 if (!fmt_ok) break;
+                /* Отсчёт занимает 2 байта; +2 байта в malloc — запас, чтобы не получить malloc(0). */
                 n = len / 2;
                 pcm = (int16_t *)malloc(n * 2 + 2);
                 if (!pcm) break;
@@ -67,7 +80,9 @@ static int16_t *read_audio(const char *path, size_t *n_out)
         if (pcm) n = fread(pcm, 2, n, fp);
     }
     fclose(fp);
-    {   /* WAV/raw are little endian; swap on big-endian hosts */
+    /* WAV и raw хранятся little endian. Проверяем порядок байтов процессора:
+     * если первый байт числа 1 равен 0, процессор big endian — меняем байты местами. */
+    {
         const uint16_t one = 1;
         if (*(const unsigned char *)&one == 0) {
             size_t i;
@@ -78,6 +93,7 @@ static int16_t *read_audio(const char *path, size_t *n_out)
     return pcm;
 }
 
+/* Колбэк для --scores: user — это открытый FILE*, переданный в движок. */
 static void on_score(void *user, uint64_t frame, float score)
 {
     fprintf((FILE *)user, "%llu %.6f\n", (unsigned long long)frame, score);
@@ -98,6 +114,8 @@ int main(int argc, char **argv)
                         "[-r ms] [-c chunk] [--scores f] [--features f] [--quiet]\n", mv_version(), argv[0]);
         return 2;
     }
+    /* Разбор параметров: argv[1] — модель, argv[2] — звук, дальше опции.
+     * argv[++i] берёт значение опции и сразу перескакивает через него. */
     for (i = 3; i < argc; i++) {
         if (!strcmp(argv[i], "-t") && i + 1 < argc) cfg.threshold = (float)atof(argv[++i]);
         else if (!strcmp(argv[i], "-e") && i + 1 < argc) cfg.infer_every = atoi(argv[++i]);
@@ -115,6 +133,8 @@ int main(int argc, char **argv)
     pcm = read_audio(argv[2], &n);
     if (!pcm) { mv_destroy(e); return 1; }
 
+    /* Признаки считаем отдельно по всему файлу, кадр за кадром — для
+     * сравнения с Python (tests/parity.py). */
     if (feat_path) {
         FILE *ff = fopen(feat_path, "wb");
         mv_features *f = mv_features_create();
@@ -133,7 +153,10 @@ int main(int argc, char **argv)
         sf = fopen(scores_path, "w");
         if (sf) mv_set_score_callback(e, on_score, sf);
     }
+    /* clock() меряет процессорное время; так получаем «коэффициент реального
+     * времени»: какая доля секунды CPU уходит на секунду звука. */
     t0 = clock();
+    /* Подаём звук кусками, как это делал бы настоящий микрофонный поток. */
     for (pos = 0; pos < n; pos += (size_t)chunk) {
         mv_detection d[4];
         size_t len = n - pos < (size_t)chunk ? n - pos : (size_t)chunk;

@@ -1,9 +1,10 @@
-"""Streaming evaluation through the C engine (mv_cli).
+"""Потоковая проверка модели через движок на C (mv_cli).
 
-Builds long test recordings from held-out clips, runs the engine over them and reports
-recall (detected wake words) and false accepts per hour.
+Склеивает из отложенных клипов длинные тестовые записи, прогоняет по ним движок
+так же, как на роботе, и считает полноту (долю найденных слов) и число ложных
+срабатываний в час. Проверяется именно C-движок, а не PyTorch, — то, что будет на роботе.
 
-usage: python train/eval_stream.py --model models/vektor_ru.mvw --cli engine/mv_cli \
+Запуск: python train/eval_stream.py --model models/vektor_ru.mvw --cli engine/mv_cli \
            --data ../data --out ../eval
 """
 import argparse
@@ -21,6 +22,7 @@ SR = 16000
 
 
 def load(pattern):
+    """Прочитать WAV по маске, свести в моно и обрезать тишину."""
     out = []
     for p in sorted(glob.glob(pattern)):
         x, sr = sf.read(p, dtype="float32")
@@ -29,15 +31,17 @@ def load(pattern):
     return out
 
 
+# Привести клип к случайной громкости от lo до hi дБ (по RMS).
 def level(x, rnd, lo=-30, hi=-14):
     return x / (rms(x) + 1e-9) * 10 ** (rnd.uniform(lo, hi) / 20)
 
 
 def build_pos(pos, fillers, rnd, noisy):
+    """Запись из слов с паузами 1–2 с; вернуть звук и моменты конца каждого слова (в секундах)."""
     parts, ends, t = [], [], 0
     for clip in pos:
         gap = np.zeros(int(rnd.uniform(1.0, 2.0) * SR), np.float32)
-        if fillers and rnd.random() < 0.5:     # some speech before the wake word
+        if fillers and rnd.random() < 0.5:     # иногда перед словом звучит другая речь
             f = fillers[rnd.integers(0, len(fillers))][: int(1.5 * SR)]
             f = level(f, rnd)
             gap[: len(f)] = f[: len(gap)]
@@ -54,6 +58,7 @@ def build_pos(pos, fillers, rnd, noisy):
 
 
 def add_noise(x, rnd, snr_lo, snr_hi):
+    """Добавить шум кусками по 10 с, каждый кусок со своим видом и уровнем шума."""
     out = x.copy()
     seg = 10 * SR
     for s in range(0, len(x), seg):
@@ -64,6 +69,7 @@ def add_noise(x, rnd, snr_lo, snr_hi):
 
 
 def build_neg(neg, rnd, minutes):
+    """Запись длиной minutes минут только из негативов: любое срабатывание на ней — ложное."""
     parts, total = [], 0
     while total < minutes * 60 * SR:
         for i in rnd.permutation(len(neg)):
@@ -80,6 +86,8 @@ def build_neg(neg, rnd, minutes):
 
 
 def run(cli, model, wav, thr):
+    """Запустить mv_cli; вернуть времена срабатываний и коэффициент реального времени
+    (последнее число итоговой строки)."""
     out = subprocess.run([cli, model, wav, "-t", str(thr)], check=True, capture_output=True, text=True).stdout
     dets = [float(l.split()[1]) for l in out.splitlines() if l.startswith("detection")]
     rtf = float(out.strip().splitlines()[-1].split()[-1])
@@ -87,6 +95,8 @@ def run(cli, model, wav, thr):
 
 
 def recall(dets, ends):
+    """Слово найдено, если срабатывание пришло от 0,4 с до конца слова до 1 с после.
+    Срабатывания вне этих интервалов считаются ложными."""
     dets = np.array(dets)
     hit = sum(1 for e in ends if len(dets) and np.any((dets > e - 0.4) & (dets < e + 1.0)))
     fa = sum(1 for d in dets if not any(e - 0.4 < d < e + 1.0 for e in ends))
@@ -103,7 +113,7 @@ def main():
     ap.add_argument("--thresholds", default="0.5,0.6,0.7,0.8,0.9,0.95")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
-    rnd = np.random.default_rng(1234)
+    rnd = np.random.default_rng(1234)     # фиксированный seed — одинаковые тестовые записи
     sets = {
         "libritts_heldout": (load(f"{a.data}/test/pos/librittstest_*.wav"), load(f"{a.data}/test/neg/librittstest_*.wav")),
         "macos_milena": (load(f"{a.data}/say/pos/*.wav"), load(f"{a.data}/say/neg/*.wav")),
@@ -112,7 +122,7 @@ def main():
     for name, (pos, neg) in sets.items():
         fill = [c for c in neg if len(c) > SR]
         for noisy in (False, True):
-            reps = 1 if len(pos) > 100 else 8      # the Milena set is small; reuse it with new placement/noise
+            reps = 1 if len(pos) > 100 else 8      # набор Milena маленький — повторяем его с другим шумом и паузами
             x, ends = build_pos(pos * reps, fill, rnd, noisy)
             fn = os.path.join(a.out, f"pos_{name}_{'noisy' if noisy else 'clean'}.wav")
             sf.write(fn, x, SR, subtype="PCM_16")

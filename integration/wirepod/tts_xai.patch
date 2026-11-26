@@ -1,0 +1,14 @@
+diff --git a/chipper/pkg/wirepod/ttr/tts_xai.go b/chipper/pkg/wirepod/ttr/tts_xai.go
+index 5e533b1..0e9becb 100644
+--- a/chipper/pkg/wirepod/ttr/tts_xai.go
++++ b/chipper/pkg/wirepod/ttr/tts_xai.go
+@@ -87,6 +87,9 @@ func xaiTTS(text string) ([]byte, error) {
+ 
+ // DoSayText_XAI speaks text on the robot with xAI text-to-speech.
+ func DoSayText_XAI(robot *vector.Vector, input string) error {
++	if sayViaRobotVoice(robot, input) {
++		return nil
++	}
+ 	if strings.TrimSpace(input) == "" {
+ 		return nil
+ 	}

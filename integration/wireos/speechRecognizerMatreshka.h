@@ -1,8 +1,12 @@
-// matreshka_voice wake word recognizer for WireOS (vic-anim).
-// Copyright (c) 2026 Xstrwe. MIT License.
+// Распознаватель слова активации matreshka_voice для WireOS (процесс vic-anim).
+// Copyright (c) 2026 Xstrwe. Лицензия MIT.
 //
-// Drop-in AudioUtil::SpeechRecognizer that runs the matreshka_voice C engine.
-// It is meant to run next to SpeechRecognizerPicovoice; see README.md in this folder.
+// Готовая замена AudioUtil::SpeechRecognizer, внутри которой работает движок на C.
+// Единственный распознаватель слова активации в vic-anim; подробности — в README.md.
+//
+// Это C++-обёртка: WireOS написан на C++, а движок — на C. Обёртка переводит вызовы
+// WireOS (Update, Reset, Start/Stop) в функции mv_* и сообщает о срабатываниях через
+// обычный колбэк распознавателя.
 #ifndef __Vector_SpeechRecognizerMatreshka_H_
 #define __Vector_SpeechRecognizerMatreshka_H_
 
@@ -19,31 +23,52 @@ class SpeechRecognizerMatreshka : public AudioUtil::SpeechRecognizer
 public:
   SpeechRecognizerMatreshka();
   virtual ~SpeechRecognizerMatreshka();
+  // Копировать нельзя: объект владеет движком, и две копии освободили бы его дважды.
   SpeechRecognizerMatreshka(const SpeechRecognizerMatreshka&) = delete;
   SpeechRecognizerMatreshka& operator=(const SpeechRecognizerMatreshka&) = delete;
 
-  // Reported in SpeechRecognizerCallbackInfo::result, same as the stock trigger so the
-  // rest of the pipeline treats it as a normal wake word.
+  // Значение SpeechRecognizerCallbackInfo::result. Совпадает со штатным словом, поэтому
+  // остальная часть WireOS обрабатывает срабатывание как обычное «Hey Vector».
   static constexpr const char* kKeyword = "HEY_VECTOR";
 
+  // Файл модели и необязательный файл с порогом (одно число от 0 до 1) на роботе.
   static constexpr const char* kModelPath =
     "/data/data/com.anki.victor/persistent/matreshka_voice/model.mvw";
   static constexpr const char* kThresholdPath =
     "/data/data/com.anki.victor/persistent/matreshka_voice/threshold";
+  // Если этот файл есть, звук подаётся только когда штатный детектор речи (VAD) слышит голос.
+  // Без файла движок слушает всё время (по умолчанию). Читается при запуске.
+  static constexpr const char* kUseStockVadPath =
+    "/data/data/com.anki.victor/persistent/matreshka_voice/use_stock_vad";
 
-  // True if a model file is installed. Init() returns false (and the recognizer stays
-  // disabled) when the file is missing or invalid.
+  // true, если файл модели есть и не пустой. Init() возвращает false (и распознаватель
+  // остаётся выключенным), если файла нет или он испорчен.
   static bool ModelInstalled();
   bool Init();
 
+  // Update получает очередной кусок звука с микрофона (16 кГц, 16 бит).
+  // Reset просит начать распознавание с чистого листа (выполняется в следующем Update).
+  // GetSampleCount — сколько отсчётов обработано с момента Init().
   virtual void Update(const AudioUtil::AudioSample* audioData, unsigned int audioDataLen) override;
   void Reset();
   uint64_t GetSampleCount() const;
 
+  // true, если звук надо подавать только при активном штатном VAD (есть файл kUseStockVadPath).
+  bool UseStockVad() const;
+
+  // Глушение внутри распознавателя. Пока робот говорит и 0,7 с после, а также ~2 с после
+  // конца слушания запроса, звук не обрабатывается, а движок сбрасывается.
+  // Вызывать можно из любого потока.
+  static void SetRobotSpeaking(bool speaking);
+  static void NoteListenEnded();
+
 private:
+  // Приём «pimpl»: детали спрятаны в .cpp, поэтому заголовок не тянет за собой
+  // matreshka_voice.h и не меняется при правках реализации.
   struct Impl;
   std::unique_ptr<Impl> _impl;
 
+  // Вызываются базовым классом при Start()/Stop(): включить или выключить распознавание.
   virtual void StartInternal() override;
   virtual void StopInternal() override;
 };

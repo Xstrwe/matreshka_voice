@@ -1,0 +1,30 @@
+diff --git a/chipper/pkg/wirepod/ttr/followup.go b/chipper/pkg/wirepod/ttr/followup.go
+index 120c548..39eabbc 100644
+--- a/chipper/pkg/wirepod/ttr/followup.go
++++ b/chipper/pkg/wirepod/ttr/followup.go
+@@ -35,20 +35,16 @@ func StartFollowUp(esn string) {
+ 	go triggerListening(esn, time.Second)
+ }
+ 
+-// ContinueFollowUp is called when a request had no speech. It listens again if
+-// the robot's follow-up window is still open, otherwise it ends the dialog.
++// ContinueFollowUp is called when a request had no speech.
++// Тишина в ответ закрывает окно: после ответа робот дослушивает только один раз
++// и больше сам не «нажимает кнопку».
+ func ContinueFollowUp(esn string) {
+ 	followUpMu.Lock()
+-	deadline, ok := followUpDeadlines[esn]
+-	if ok && time.Now().After(deadline) {
++	if _, ok := followUpDeadlines[esn]; ok {
+ 		delete(followUpDeadlines, esn)
+-		ok = false
+-		logger.Println("Bot " + esn + ": follow-up window closed")
++		logger.Println("Bot " + esn + ": follow-up window closed (no speech)")
+ 	}
+ 	followUpMu.Unlock()
+-	if ok {
+-		go triggerListening(esn, time.Millisecond*1500)
+-	}
+ }
+ 
+ // EndFollowUp closes the robot's follow-up window (a new request was heard).

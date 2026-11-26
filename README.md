@@ -102,51 +102,56 @@ model weights and aggregate metrics are committed.
 python train/real_takes.py --wav rec_16k.wav --segments segments.json --out data/real/takes   # 70/30 split by region
 python train/build_features.py --real data/real/takes/train --real-aug 150 --real-only --out data/real/feats_real.npz
 python train/train.py --init runs/vektor --train feats/train.npz $(printf 'data/real/feats_real.npz %.0s' 1 2 3 4 5 6 7 8) \
-    --val feats/test.npz --out runs/vektor_ft --epochs 12 --lr 1e-3 --neg-weight 2.0
-python train/export.py --run runs/vektor_ft --out models/vektor_ru.mvw --header models/vektor_ru.h --threshold 0.8
+    --val feats/test.npz --out runs/vektor_ft --epochs 12 --lr 1e-3 --neg-weight 4.0
+python train/export.py --run runs/vektor_ft --out models/vektor_ru.mvw --header models/vektor_ru.h --threshold 0.7
 python train/eval_real.py --model models/vektor_ru.mvw --cli engine/mv_cli --takes data/real/takes/eval \
     --neg-stream eval/neg_stream.wav --out eval_real
 ```
 
 How the fine-tuning works:
 - **Real windows:** each real take becomes 150 augmented windows (speed/pitch, gain, noise, reverb, EQ, and a far-field robot-mic simulation for half of them). It also yields truncated-prefix negatives.
-- **Synthetic data:** the full synthetic set, including all hard negatives, stays in the mix. The real windows are oversampled 8×.
+- **Synthetic data:** the full synthetic set, including all hard negatives, stays in the mix. The real windows are oversampled 6–8×.
+- **Real background:** windows cut from real room and TV audio with no wake word (random windows, hard negatives mined where the previous model fired, and synthetic words mixed over the room audio) teach the model what a home sounds like.
 - **Starting point:** training starts from the synthetic model and keeps its normalisation.
 
 ## Results (`models/vektor_ru.mvw`)
 
-The current model is the synthetic model fine-tuned on 23 real takes from one speaker: 16 spoken and 7 whispered. All numbers below come from the C engine (`mv_cli`).
+The current model is the synthetic model fine-tuned on real recordings of one speaker: two phone recordings of «Вектор» (59 training takes: near and far, TV loud and quiet, spoken and whispered) and two home room recordings with no wake word (TV and conversation, 97 min used for training). The default threshold is **0.7**, chosen from real false triggers on held-out room audio. All numbers come from the C engine (`mv_cli`); details in [`docs/metrics_room.json`](docs/metrics_room.json) and [`docs/metrics_rec2.json`](docs/metrics_rec2.json). "Previous" is the model before the room recordings, at its default 0.85.
 
-**Held-out real takes, same speaker.** These are 7 spoken and 3 whispered takes, held out by recording region. Noisy and far conditions use 5 random variants per take.
-- *Clean* keeps a quiet room floor 40 dB below the speech.
-- *Noisy* adds noise at 5–20 dB SNR.
-- *Far* runs the robot-mic simulation, then adds noise at 15–30 dB.
+**Real false triggers, held-out room audio** (the last 30 % of each room recording: 18.1 min recorded near, 23.3 min far).
 
-| threshold | spoken clean | spoken noisy | spoken far | whispered clean | whispered noisy | whispered far | false accepts / hour |
+| model | threshold | near, per hour | far, per hour |
+|---|---|---|---|
+| previous | 0.85 | 255 | 64 |
+| **current** | **0.7** | **3.3** (1 trigger) | **0** |
+
+The current model keeps one trigger in the near stream for every threshold from 0.5 to 0.97.
+
+**Second «Вектор» recording, 18 held-out takes in the real room** (real TV in the background). *Weak* takes are less than 6 dB above the background: far, whispered or masked by the TV.
+
+| model | threshold | all | TV quiet | TV loud | strong | mid | weak |
 |---|---|---|---|---|---|---|---|
-| 0.5 | 3/7 | 18/35 | 25/35 | 2/3 | 10/15 | 11/15 | 262 |
-| 0.7 | 2/7 | 9/35 | 23/35 | 2/3 | 10/15 | 10/15 | 126 |
-| **0.8 (default)** | **2/7** | **6/35** | **17/35** | **2/3** | **10/15** | **10/15** | **80** |
-| 0.9 | 1/7 | 5/35 | 11/35 | 2/3 | 10/15 | 7/15 | 28 |
+| previous | 0.85 | 15/18 | 13/14 | 2/4 | 6/6 | 5/7 | 4/5 |
+| **current** | **0.7** | **16/18** | **14/14** | **2/4** | **6/6** | **5/7** | **5/5** |
 
-The model before fine-tuning scored 1/7, 6/35, 2/35 and 0 of all whispered takes at 0.8, with 87 false accepts per hour; see [`docs/metrics_real.json`](docs/metrics_real.json).
+The same takes through the clean / noisy / far simulation: 141/198 (previous: 101/198).
 
-**Synthetic test sets** ([`docs/metrics_ft2.json`](docs/metrics_ft2.json)):
-- *Held-out speakers:* 54 speakers of the multi-speaker voice that were never used in training.
-- *Milena:* the independent macOS voice.
-- *False accepts:* counted on a 2-hour stream of held-out negative speech with noise. The stream is full of phonetically close words (Виктор, сектор, …), so it is much harder than everyday audio.
+**First «Вектор» recording, held-out takes** (7 spoken and 3 whispered, held out by region; noisy and far use 5 random variants per take). *Clean* keeps a quiet room floor 40 dB below the speech, *noisy* adds noise at 5–20 dB SNR, *far* runs the robot-mic simulation and adds noise at 15–30 dB. The last column is the 2-hour synthetic stream full of phonetically close words (Виктор, сектор, …).
 
-| threshold | held-out speakers, clean | held-out speakers, noisy | macOS Milena, clean | Milena, noisy | false accepts / hour |
-|---|---|---|---|---|---|
-| 0.5 | 94.2 % | 93.8 % | 47.4 % | 18.8 % | 262 |
-| 0.8 | 92.0 % | 83.2 % | 17.7 % | 2.6 % | 80 |
-| 0.9 | 86.0 % | 70.6 % | 7.8 % | 1.6 % | 28 |
-| 0.95 | 76.8 % | 53.6 % | 5.2 % | 1.0 % | 8.5 |
+| model | threshold | spoken clean | spoken noisy | spoken far | whispered clean | whispered noisy | whispered far | synthetic false accepts / hour |
+|---|---|---|---|---|---|---|---|---|
+| previous | 0.85 | 2/7 | 9/35 | 12/35 | 2/3 | 10/15 | 5/15 | 16 |
+| **current** | **0.7** | **3/7** | **10/35** | **16/35** | **2/3** | **10/15** | **10/15** | **63** |
+| current | 0.85 | 0/7 | 7/35 | 11/35 | 1/3 | 10/15 | 8/15 | 17 |
+
+**Short TV clip.** On 12.6 s of held-out news audio from the second recording the current model fires 3 times at 0.7 (previous: 2 at 0.85).
+
+**Synthetic test sets** at 0.7: held-out speakers 91.6 % clean, 85.0 % noisy; macOS Milena 29.2 % clean, 8.3 % noisy; 63 false accepts per hour on the synthetic stream. Earlier models: [`docs/metrics_ft2.json`](docs/metrics_ft2.json), [`docs/metrics_rec2.json`](docs/metrics_rec2.json).
 
 Where this leaves the model:
-- **Real speech:** recall on real speech is still low, and the false-accept rate is far too high for always-on use.
-- **Fine-tuning:** it helps, but 23 takes from a phone are not enough.
-- **Next:** more real data and real background audio (see Next steps).
+- **Real rooms:** on held-out room audio from the same home, false triggers dropped from hundreds per hour to about 3 per hour near the microphone and none far away.
+- **Limits:** all data comes from one speaker, one phone and one home; the held-out room audio was recorded on the same day as the training part. Phonetically close words still trigger more often than in everyday speech (63 per hour on the hard synthetic stream).
+- **Next:** a supervised trial on the robot's own microphones, then recordings from other speakers.
 
 Earlier checks, still valid for the engine:
 - **C vs Python parity:** feature difference ≤ 4e-5, score difference ≤ 1e-6 (`make test`).

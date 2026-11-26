@@ -7,6 +7,8 @@ provider (`tts_xai.go`).
 |---|---|
 | `robot_tts_ru.go` | Adds `GET /robot_tts?text=...` on the wire-pod web port (8080). The text is cleaned of Acapela tags, voiced with xAI TTS as is and returned as raw 16 kHz mono 16-bit PCM. There is no translation: the robot already builds its phrases in Russian (see `../wireos`). |
 | `russian_strings.patch` | Native Russian text for the phrases wire-pod itself speaks (LLM error, weather not configured, face enrolment by voice, knowledge graph errors), so the robot never says English. Apply in the wire-pod repo root: `git apply russian_strings.patch`. |
+| `followup_once.patch` | Follow-up listening after an LLM answer listens once: silence closes the window instead of pressing the virtual button again every 1.5 s for 20 s. |
+| `ru_intents.patch` | More Russian keyphrases for Vector's own intents (time, weather, age, names, greetings, sleep, explore, come here, photo), so these requests run the robot's native behaviors and only unmatched speech goes to the LLM. |
 | `tts_xai.patch` | One hook in `DoSayText_XAI`: if `chipper/robot_voice_ru` exists, LLM answers are spoken with the robot's own `SayText` (Vector voice) instead of being streamed as raw audio. |
 
 ## How the pieces connect
@@ -23,6 +25,7 @@ provider (`tts_xai.go`).
 
 | Switch | On | Off |
 |---|---|---|
+| Raised voice pitch | `echo 1.19 > /opt/wire-pod/chipper/robot_voice_pitch` (ratio, 1.19 is about +3 semitones; needs `ffmpeg` with `rubberband`) | `rm /opt/wire-pod/chipper/robot_voice_pitch` (no restart needed) |
 | Russian robot phrases | `echo http://<wire-pod-ip>:8080/robot_tts > .../matreshka_voice/tts_url` | `rm .../matreshka_voice/tts_url` (no restart needed) |
 | LLM answers through the robot voice | `touch /opt/wire-pod/chipper/robot_voice_ru` | `rm /opt/wire-pod/chipper/robot_voice_ru` (no restart needed) |
 
@@ -32,3 +35,12 @@ provider (`tts_xai.go`).
   trusted network.
 - Phrases (including names the robot says) are sent to the configured TTS service.
 - A phrase takes about 0.7-1 s to voice.
+
+## Routing
+
+wire-pod matches the transcript against `intent-data/ru-RU.json` first (exact match, then substring
+match in file order); only text that matches nothing goes to the LLM (`knowledge.intentgraph`).
+Native intents run Vector's own behaviors and speak the built-in Russian phrases.
+
+The LLM prompt (`knowledge.openai_prompt` in `apiConfig.json`, not in this repo) asks for Russian,
+short spoken answers and tells the model never to address the user by name.

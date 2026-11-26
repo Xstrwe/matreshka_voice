@@ -7,10 +7,13 @@ package wirepod_ttr
 // HTTP 500 and the robot falls back to its built-in voice.
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"os"
+	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,9 +43,37 @@ func robotTTSHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pcm = gainSoftLimit(pcm[:len(pcm)-len(pcm)%2], xaiTTSGain())
+	pcm = robotVoicePitch(pcm)
 	logger.Println("robot_tts: \"" + text + "\" (" + time.Since(start).Round(time.Millisecond).String() + ")")
 	w.Header().Set("Content-Type", "audio/L16;rate=16000;channels=1")
 	w.Write(pcm)
+}
+
+// robotVoicePitch: if ./robot_voice_pitch exists (in the chipper folder) and holds a ratio such as
+// 1.19 (about +3 semitones), the voice is pitched up with ffmpeg rubberband, keeping its tempo.
+// The robot's own voice processing is applied on top afterwards. Any error keeps the original audio.
+func robotVoicePitch(pcm []byte) []byte {
+	b, err := os.ReadFile("./robot_voice_pitch")
+	if err != nil {
+		return pcm
+	}
+	ratio, err := strconv.ParseFloat(strings.TrimSpace(string(b)), 64)
+	if err != nil || ratio < 0.5 || ratio > 2.0 || ratio == 1.0 {
+		return pcm
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-loglevel", "error",
+		"-f", "s16le", "-ar", "16000", "-ac", "1", "-i", "pipe:0",
+		"-af", "rubberband=pitch="+strconv.FormatFloat(ratio, 'f', 3, 64),
+		"-f", "s16le", "-ar", "16000", "-ac", "1", "pipe:1")
+	cmd.Stdin = bytes.NewReader(pcm)
+	out, err := cmd.Output()
+	if err != nil || len(out) < 2 {
+		logger.Println("robot_tts: pitch shift failed, original voice")
+		return pcm
+	}
+	return out[:len(out)-len(out)%2]
 }
 
 // sayViaRobotVoice: if ./robot_voice_ru exists (in the chipper folder), LLM answers are spoken

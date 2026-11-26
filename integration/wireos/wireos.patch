@@ -18,8 +18,28 @@ index 1459cfdc..fcfcf296 100644
    ${OPENCV_LIBS}
    ${FLATBUFFERS_LIBS}
    signal_essence
+diff --git a/animProcess/src/cozmoAnim/micData/micDataSystem.cpp b/animProcess/src/cozmoAnim/micData/micDataSystem.cpp
+index 8dc70343..c674f7ca 100644
+--- a/animProcess/src/cozmoAnim/micData/micDataSystem.cpp
++++ b/animProcess/src/cozmoAnim/micData/micDataSystem.cpp
+@@ -28,6 +28,7 @@
+ #include "cozmoAnim/micData/micDataProcessor.h"
+ #include "cozmoAnim/micData/micDataSystem.h"
+ #include "cozmoAnim/showAudioStreamStateManager.h"
++#include "cozmoAnim/speechRecognizer/speechRecognizerSystem.h"
+ 
+ #include "audioEngine/plugins/ankiPluginInterface.h"
+ 
+@@ -690,6 +691,7 @@ void MicDataSystem::ClearCurrentStreamingJob()
+     {
+       _currentStreamingJob->SetTimeToRecord(0);
+       _currentStreamingJob = nullptr;
++      SpeechRecognizerSystem::NoteListenEnded();  // короткая пауза для русского слова после слушания
+ 
+       for(auto func : _streamUpdatedCallbacks)
+       {
 diff --git a/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.cpp b/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.cpp
-index 237f6bcf..7ba001eb 100644
+index 237f6bcf..3dcc5cf3 100644
 --- a/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.cpp
 +++ b/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.cpp
 @@ -18,6 +18,7 @@
@@ -87,7 +107,7 @@ index 237f6bcf..7ba001eb 100644
    {
      if (info.result != SpeechRecognizerPicovoice::kAlexaKeyword) {
        callback(info);
-@@ -103,6 +130,35 @@ void SpeechRecognizerSystem::InitVector(TriggerWordDetectedCallback callback)
+@@ -103,6 +130,44 @@ void SpeechRecognizerSystem::InitVector(TriggerWordDetectedCallback callback)
    });
  }
  
@@ -109,6 +129,15 @@ index 237f6bcf..7ba001eb 100644
 +  constexpr uint64_t kMaxSpeakMs = 60000;
 +}
 +
++void SpeechRecognizerSystem::NoteListenEnded()
++{
++  // Вместе с kSpeakerHoldMs получается около 2 с тишины для русского слова.
++  constexpr uint64_t kListenEndExtraMs = 1300;
++  const uint64_t until = NowMs() + kListenEndExtraMs;
++  uint64_t cur = sSpeakEnd_ms;
++  while (cur < until && !sSpeakEnd_ms.compare_exchange_weak(cur, until)) {}
++}
++
 +void SpeechRecognizerSystem::SetRobotSpeaking(bool speaking)
 +{
 +  const uint64_t now = NowMs();
@@ -123,7 +152,7 @@ index 237f6bcf..7ba001eb 100644
  void SpeechRecognizerSystem::ToggleNotchDetector(bool active)
  {
    _notchDetectorActive = active;
-@@ -157,9 +213,25 @@ void SpeechRecognizerSystem::Update(const AudioUtil::AudioSample * audioData, un
+@@ -157,9 +222,25 @@ void SpeechRecognizerSystem::Update(const AudioUtil::AudioSample * audioData, un
    }
  
    // Update recognizer
@@ -151,7 +180,7 @@ index 237f6bcf..7ba001eb 100644
  
  void SpeechRecognizerSystem::UpdateTriggerForLocale(const Util::Locale& newLocale)
 diff --git a/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.h b/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.h
-index 3615d4e0..7f918808 100644
+index 3615d4e0..99a10458 100644
 --- a/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.h
 +++ b/animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.h
 @@ -34,6 +34,7 @@ namespace Anki {
@@ -162,7 +191,7 @@ index 3615d4e0..7f918808 100644
    }
    namespace Util {
      class Locale;
-@@ -74,6 +75,11 @@ public:
+@@ -74,6 +75,14 @@ public:
    // Update recognizer audio
    // NOTE: Always call from the same thread
    void Update(const AudioUtil::AudioSample * audioData, unsigned int audioDataLen, bool vadActive);
@@ -171,10 +200,13 @@ index 3615d4e0..7f918808 100644
 +  // Пока робот говорит и ещё kSpeakerHoldMs после, matreshka_voice не получает звук:
 +  // иначе робот будит сам себя собственной речью. Остальные звуки (анимации, моторы) не глушат.
 +  static void SetRobotSpeaking(bool speaking);
++  // Слушание запроса закончилось: ещё ~2 с не слушаем русское слово, чтобы звук
++  // выхода из слушания (и эхо) не будили робота повторно.
++  static void NoteListenEnded();
    
    void UpdateTriggerForLocale(const Util::Locale& newLocale);
    
-@@ -94,6 +100,11 @@ private:
+@@ -94,6 +103,11 @@ private:
  
    const Anim::AnimContext*                    _context = nullptr;
    std::unique_ptr<SpeechRecognizerPicovoice>  _victorTrigger;
@@ -452,6 +484,20 @@ index 973d3bea..18fe8a0b 100644
    if (nullptr == _BAB_Obj) {
      LOG_ERROR("TextToSpeechProvider.GetFirstAudioData", "TTS SDK not initialized");
      return RESULT_FAIL_INVALID_OBJECT;
+diff --git a/engine/actions/basicActions.cpp b/engine/actions/basicActions.cpp
+index ee63e04b..29d3e524 100644
+--- a/engine/actions/basicActions.cpp
++++ b/engine/actions/basicActions.cpp
+@@ -2385,6 +2385,9 @@ namespace Anki {
+     
+     bool TurnTowardsFaceAction::ShouldSayName(const std::string& name)
+     {
++      // Робот не обращается к человеку по имени сам, когда узнаёт лицо.
++      // Имя звучит только в ответ на прямой вопрос («как меня зовут») и при знакомстве.
++      return false;
+       if(nullptr != _sayNameProbTable)
+       {
+         return _sayNameProbTable->UpdateShouldSayName(name);
 diff --git a/engine/aiComponent/behaviorComponent/behaviors/timer/behaviorWallTimeCoordinator.cpp b/engine/aiComponent/behaviorComponent/behaviors/timer/behaviorWallTimeCoordinator.cpp
 index 902884e8..a68e090a 100644
 --- a/engine/aiComponent/behaviorComponent/behaviors/timer/behaviorWallTimeCoordinator.cpp

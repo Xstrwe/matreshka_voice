@@ -34,6 +34,14 @@ The patch:
   the model loaded: the English recognizer is not created at all, so it uses no CPU or memory;
 - adds an optional Russian voice for the robot's own phrases in `textToSpeechProvider_vicos.cpp`
   (enabled by a `tts_url` file, see `../wirepod/README.md`);
+- after each listen (end of the cloud stream) keeps matreshka_voice muted for about 2 s more
+  (`SpeechRecognizerSystem::NoteListenEnded()` from `MicDataSystem::ClearCurrentStreamingJob()`), so
+  the end-of-listening sound and echo do not wake the robot again;
+- logs the peak raw score once a second when it is at least 0.25
+  (`SpeechRecognizerMatreshka.Peak`), to tune the threshold against real voices;
+- the robot does not say a person's name when it recognizes their face
+  (`TurnTowardsFaceAction::ShouldSayName` returns false); names are still said when asked
+  («как меня зовут») and during face enrollment;
 - makes the robot's own phrases Russian where they are built, in `vic-engine`
   (`libcozmo_engine.so`): `engine/components/russianSpeech.h` writes numbers, time and counts as
   Russian words with the right noun forms (for example «Сейчас час ноль пять», «двадцать один

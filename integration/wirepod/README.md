@@ -6,6 +6,7 @@ provider (`tts_xai.go`).
 | File | What it does |
 |---|---|
 | `robot_tts_ru.go` | Adds `GET /robot_tts?text=...` on the wire-pod web port (8080). The text is cleaned of Acapela tags, voiced with xAI TTS as is and returned as raw 16 kHz mono 16-bit PCM. There is no translation: the robot already builds its phrases in Russian (see `../wireos`). |
+| `russian_strings.patch` | Native Russian text for the phrases wire-pod itself speaks (LLM error, weather not configured, face enrolment by voice, knowledge graph errors), so the robot never says English. Apply in the wire-pod repo root: `git apply russian_strings.patch`. |
 | `tts_xai.patch` | One hook in `DoSayText_XAI`: if `chipper/robot_voice_ru` exists, LLM answers are spoken with the robot's own `SayText` (Vector voice) instead of being streamed as raw audio. |
 
 ## How the pieces connect

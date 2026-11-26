@@ -23,7 +23,11 @@ The patch:
 - adds a `_matreshkaTrigger` member;
 - mutes matreshka_voice while the robot speaks through its TTS and for 700 ms after it (and resets
   the engine), so the robot does not wake itself with its own voice. `TextToSpeechComponent`
-  reports speech start and end through `SpeechRecognizerSystem::SetRobotSpeaking()`. (The ALSA
+  reports speech start and end through `SpeechRecognizerSystem::SetRobotSpeaking()`: start in
+  `PostAudioEvent()` (normal speech: behaviors, SDK `SayText`, LLM answers), end in
+  `OnUtteranceCompleted()` and `StopActiveTTS()`, plus the keyframe TTS callbacks
+  `OnAudioPlaying()`/`OnAudioComplete()`. The keyframe callbacks alone are not enough: they do not
+  fire for normal speech, and the robot then wakes itself and answers its own words. (The ALSA
   sink's "speaker in use" flag is not usable for this: it stays true all the time, and gating on it
   makes the wake word deaf.)
 - turns off the stock English wake word engine when `disable_english` exists next to the model and

@@ -187,7 +187,7 @@ index 3615d4e0..7f918808 100644
    TriggerWordDetectedCallback                 _alexaTrigger;
    Alexa*                                      _alexaComponent = nullptr;
 diff --git a/animProcess/src/cozmoAnim/textToSpeech/textToSpeechComponent.cpp b/animProcess/src/cozmoAnim/textToSpeech/textToSpeechComponent.cpp
-index 9f3df6f6..3838cc80 100644
+index 9f3df6f6..2cb3b6dd 100644
 --- a/animProcess/src/cozmoAnim/textToSpeech/textToSpeechComponent.cpp
 +++ b/animProcess/src/cozmoAnim/textToSpeech/textToSpeechComponent.cpp
 @@ -15,6 +15,7 @@
@@ -198,7 +198,31 @@ index 9f3df6f6..3838cc80 100644
  #include "cozmoAnim/animProcessMessages.h"
  #include "cozmoAnim/audio/cozmoAudioController.h"
  #include "cozmoAnim/robotDataLoader.h"
-@@ -798,6 +799,7 @@ void TextToSpeechComponent::OnAudioPlaying(const TTSID_t ttsID)
+@@ -492,6 +493,7 @@ bool TextToSpeechComponent::PostAudioEvent(uint8_t ttsID)
+   }
+ 
+   LOG_DEBUG("TextToSpeechComponent.PostAudioEvent", "eventID %u ttsID %d playingID %d", eventID, ttsID, playingID);
++  SpeechRecognizerSystem::SetRobotSpeaking(true);   // обычная речь (SayText, поведения): глушим русское слово
+ 
+   return true;
+ }
+@@ -502,6 +504,7 @@ bool TextToSpeechComponent::PostAudioEvent(uint8_t ttsID)
+ void TextToSpeechComponent::StopActiveTTS()
+ {
+   LOG_DEBUG("TextToSpeechComponent.StopActiveTTS", "Stop active TTS");
++  SpeechRecognizerSystem::SetRobotSpeaking(false);  // речь прервали
+   _audioController->StopAllAudioEvents(static_cast<AudioEngine::AudioGameObject>(kTTSGameObject));
+ }
+ 
+@@ -523,6 +526,7 @@ void TextToSpeechComponent::ClearActiveTTS()
+ void TextToSpeechComponent::OnUtteranceCompleted(uint8_t ttsID)
+ {
+   _activeTTSID = kInvalidTTSID;
++  SpeechRecognizerSystem::SetRobotSpeaking(false);  // фраза доиграла: после короткой паузы снова слушаем
+ 
+   LOG_DEBUG("TextToSpeechComponent.UtteranceCompleted", "Completion callback received for ttsID %hhu", ttsID);
+   SendAnimToEngine(ttsID, TextToSpeechState::Finished);
+@@ -798,6 +802,7 @@ void TextToSpeechComponent::OnAudioPlaying(const TTSID_t ttsID)
  
    // Notify engine that TTS is now playing
    SendAnimToEngine(ttsID, TextToSpeechState::Playing, GetDuration_ms(bundle));
@@ -206,7 +230,7 @@ index 9f3df6f6..3838cc80 100644
  
  }
  
-@@ -806,6 +808,7 @@ void TextToSpeechComponent::OnAudioPlaying(const TTSID_t ttsID)
+@@ -806,6 +811,7 @@ void TextToSpeechComponent::OnAudioPlaying(const TTSID_t ttsID)
  //
  void TextToSpeechComponent::OnAudioComplete(const TTSID_t ttsID)
  {

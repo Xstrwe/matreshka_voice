@@ -49,6 +49,14 @@ model fails to load.
 - **Restarts.** Two `anki-robot.target` restarts within about 20 s can hang vic-anim (fault 914); the
   install scripts restart once and wait.
 
+## Status
+
+Steps 1-3 are built (`vic-anim.full`, staged on the Pi as `install_next.sh full`): the English engine
+is gone from the build, matreshka_voice is the only recognizer, the mute and the post-listen pause
+live in `SpeechRecognizerMatreshka`, and the stock VAD gate is off by default (`use_stock_vad`
+brings it back without a rebuild). The mute stays in the C++ recognizer rather than the C engine,
+so the C API does not change. Not yet tested on the robot.
+
 ## Order
 
 1. Install the staged v8 (`vic-anim`) and the engine library, check for a day.

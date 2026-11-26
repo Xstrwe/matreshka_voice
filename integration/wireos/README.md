@@ -1,14 +1,17 @@
 # WireOS integration notes
 
-matreshka_voice works with Vector robots running WireOS. The engine runs inside `vic-anim`
-next to the stock wake word recognizer and reports the same `HEY_VECTOR` result, so the rest
-of the voice pipeline (intent capture, wire-pod) does not change.
+matreshka_voice is the only wake word engine in `vic-anim` on WireOS. The stock English wake word
+engine is removed from the build (its sources, its library and the model switching by language).
+The engine reports the same `HEY_VECTOR` result, so the rest of the voice pipeline (streaming the
+request, wire-pod) does not change. The backpack button still starts listening without the wake
+word, also when the model is missing or broken.
 
 ## Where the audio comes from
 
 `SpeechRecognizerSystem::Update()` (`animProcess/src/cozmoAnim/speechRecognizer/speechRecognizerSystem.cpp`)
-receives processed microphone audio: 16 kHz, mono, int16, with a VAD flag. The stock trigger
-gets it only while VAD is active. `SpeechRecognizerMatreshka` gets exactly the same samples.
+receives processed microphone audio: 16 kHz, mono, int16, with a VAD flag. By default all of it goes
+to `SpeechRecognizerMatreshka`; with a `use_stock_vad` file next to the model only the audio while
+the stock VAD is active does (lower CPU, slower on quiet speech).
 
 ## Files
 
@@ -17,41 +20,33 @@ gets it only while VAD is active. `SpeechRecognizerMatreshka` gets exactly the s
 | `speechRecognizerMatreshka.h/.cpp` | `animProcess/src/cozmoAnim/speechRecognizer/` (picked up by the `src/cozmoAnim` source glob in `animProcess/BUILD.in`) |
 | `../../engine/include`, `../../engine/src` | `3rd/matreshka_voice/include`, `3rd/matreshka_voice/src` |
 | `matreshka_voice.cmake` | `cmake/matreshka_voice.cmake` |
-| `wireos.patch` | apply from the repo root: `patch -p1 < wireos.patch` |
+| `wireos.patch` | apply from the repo root: `patch -p1 < wireos.patch` (it also deletes the stock English recognizer sources) |
 
 The patch:
-- adds a `_matreshkaTrigger` member;
-- mutes matreshka_voice while the robot speaks through its TTS and for 700 ms after it (and resets
-  the engine), so the robot does not wake itself with its own voice. `TextToSpeechComponent`
-  reports speech start and end through `SpeechRecognizerSystem::SetRobotSpeaking()`: start in
-  `PostAudioEvent()` (normal speech: behaviors, SDK `SayText`, LLM answers), end in
-  `OnUtteranceCompleted()` and `StopActiveTTS()`, plus the keyframe TTS callbacks
-  `OnAudioPlaying()`/`OnAudioComplete()`. The keyframe callbacks alone are not enough: they do not
-  fire for normal speech, and the robot then wakes itself and answers its own words. (The ALSA
-  sink's "speaker in use" flag is not usable for this: it stays true all the time, and gating on it
-  makes the wake word deaf.)
-- turns off the stock English wake word engine when `disable_english` exists next to the model and
-  the model loaded: the English recognizer is not created at all, so it uses no CPU or memory;
-- adds an optional Russian voice for the robot's own phrases in `textToSpeechProvider_vicos.cpp`
-  (enabled by a `tts_url` file, see `../wirepod/README.md`);
-- after each listen (end of the cloud stream) keeps matreshka_voice muted for about 2 s more
-  (`SpeechRecognizerSystem::NoteListenEnded()` from `MicDataSystem::ClearCurrentStreamingJob()`), so
-  the end-of-listening sound and echo do not wake the robot again;
+- `SpeechRecognizerSystem` owns one recognizer, `SpeechRecognizerMatreshka`. If the model is
+  missing or does not load, it logs an error and there is no wake word (no fallback to another
+  language); the backpack button keeps working. The language setting no longer changes the model;
+- the «Alexa» wake word ran on the removed engine, so the Alexa wake word methods are empty and the
+  Alexa playback recognizer is not created;
+- mute inside `SpeechRecognizerMatreshka`: no audio is processed (and the engine is reset) while the
+  robot speaks and 700 ms after, and for about 2 s after each listen ends, so the robot does not
+  wake itself with its own voice or the end-of-listening sound. `TextToSpeechComponent` reports
+  speech start in `PostAudioEvent()` (behaviors, SDK `SayText`, LLM answers) and end in
+  `OnUtteranceCompleted()`/`StopActiveTTS()` (plus the keyframe TTS callbacks);
+  `MicDataSystem::ClearCurrentStreamingJob()` reports the end of a listen. (The ALSA sink's
+  "speaker in use" flag is not usable: it stays true all the time);
 - logs the peak raw score once a second when it is at least 0.25
   (`SpeechRecognizerMatreshka.Peak`), to tune the threshold against real voices;
-- the robot does not say a person's name when it recognizes their face
-  (`TurnTowardsFaceAction::ShouldSayName` returns false); names are still said when asked
-  («как меня зовут») and during face enrollment;
-- makes the robot's own phrases Russian where they are built, in `vic-engine`
-  (`libcozmo_engine.so`): `engine/components/russianSpeech.h` writes numbers, time and counts as
-  Russian words with the right noun forms (for example «Сейчас час ноль пять», «двадцать один
-  градус», «два градуса», «пять лет»); `LocaleComponent::GetString` returns built-in Russian text
-  for every behavior and BlackJack string; `BehaviorWallTimeCoordinator` says the time in Russian.
-  No translation step is involved;
-- creates it in `InitVector()` only if the model file exists;
-- feeds it in `Update()`;
-- stops it in the destructor;
-- links the `matreshka_voice` static library into `victor_anim`.
+- adds the Russian voice for the robot's own phrases in `textToSpeechProvider_vicos.cpp`
+  (enabled by a `tts_url` file, see `../wirepod/README.md`);
+- in `vic-engine` (`libcozmo_engine.so`): the robot's own phrases are built in Russian
+  (`engine/components/russianSpeech.h` writes numbers, time and counts as Russian words with the
+  right noun forms, for example «Сейчас час ноль пять», «двадцать один градус», «два градуса»,
+  «пять лет»; `LocaleComponent::GetString` returns built-in Russian text for every behavior and
+  BlackJack string; `BehaviorWallTimeCoordinator` says the time in Russian; no translation step);
+  the robot does not say a person's name when it recognizes their face
+  (`TurnTowardsFaceAction::ShouldSayName`), only when asked («как меня зовут») or while enrolling;
+- links the `matreshka_voice` static library into `victor_anim` instead of the stock one.
 
 Regenerate the source lists and rebuild vic-anim with the normal WireOS build
 (`./project/victor/build-victor.sh` or the Docker build used by WireOS).
@@ -59,7 +54,7 @@ Regenerate the source lists and rebuild vic-anim with the normal WireOS build
 Tested build: wire-os-victor `ebf38c28` (WireOS 3.0.2.36d), bare metal on an arm64 Raspberry Pi
 (Debian 13), `./project/victor/scripts/victor_build_release.sh`, about 40 minutes with
 `CMAKE_BUILD_PARALLEL_LEVEL=3`. The patch applies cleanly and the result is
-`_build/vicos/Release/bin/vic-anim` (stripped, about 12 KB larger than stock). Build at the same
+`_build/vicos/Release/bin/vic-anim` (stripped, about 80 KB smaller than the earlier build that carried both engines). Build at the same
 commit as the robot's `/anki/etc/revision` so the binary matches the shared libraries in `/anki/lib`.
 
 ## Files on the robot
@@ -67,11 +62,13 @@ commit as the robot's `/anki/etc/revision` so the binary matches the shared libr
 ```
 /data/data/com.anki.victor/persistent/matreshka_voice/model.mvw   # models/vektor_ru.mvw
 /data/data/com.anki.victor/persistent/matreshka_voice/threshold   # optional, e.g. 0.7
-/data/data/com.anki.victor/persistent/matreshka_voice/disable_english   # optional, empty file
+/data/data/com.anki.victor/persistent/matreshka_voice/use_stock_vad     # optional, empty file
 ```
 
-With `disable_english` present only «Вектор» wakes the robot; the English engine is not loaded.
-The flag is ignored if the model fails to load, so the robot never ends up with no wake word.
+Only «Вектор» wakes the robot; there is no other wake word in the build. Without a loadable
+`model.mvw` there is no wake word at all (the log says `SpeechRecognizerSystem.InitVector.NoModel` or
+`.ModelNotLoaded`); the backpack button still starts listening. A `disable_english` file from older
+builds is ignored.
 
 ## Deploy (separate, manual step)
 

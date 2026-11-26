@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Xstrwe. Лицензия MIT.
 //
 // Готовая замена AudioUtil::SpeechRecognizer, внутри которой работает движок на C.
-// Рассчитан на работу рядом со штатным распознавателем WireOS; подробности — в README.md.
+// Единственный распознаватель слова активации в vic-anim; подробности — в README.md.
 //
 // Это C++-обёртка: WireOS написан на C++, а движок — на C. Обёртка переводит вызовы
 // WireOS (Update, Reset, Start/Stop) в функции mv_* и сообщает о срабатываниях через
@@ -36,10 +36,10 @@ public:
     "/data/data/com.anki.victor/persistent/matreshka_voice/model.mvw";
   static constexpr const char* kThresholdPath =
     "/data/data/com.anki.victor/persistent/matreshka_voice/threshold";
-  // Если этот файл есть (содержимое не важно), штатное английское «Hey Vector» не слушается.
-  // Включить обратно: удалить файл и перезапустить anki-robot.target.
-  static constexpr const char* kDisableEnglishPath =
-    "/data/data/com.anki.victor/persistent/matreshka_voice/disable_english";
+  // Если этот файл есть, звук подаётся только когда штатный детектор речи (VAD) слышит голос.
+  // Без файла движок слушает всё время (по умолчанию). Читается при запуске.
+  static constexpr const char* kUseStockVadPath =
+    "/data/data/com.anki.victor/persistent/matreshka_voice/use_stock_vad";
 
   // true, если файл модели есть и не пустой. Init() возвращает false (и распознаватель
   // остаётся выключенным), если файла нет или он испорчен.
@@ -52,6 +52,15 @@ public:
   virtual void Update(const AudioUtil::AudioSample* audioData, unsigned int audioDataLen) override;
   void Reset();
   uint64_t GetSampleCount() const;
+
+  // true, если звук надо подавать только при активном штатном VAD (есть файл kUseStockVadPath).
+  bool UseStockVad() const;
+
+  // Глушение внутри распознавателя. Пока робот говорит и 0,7 с после, а также ~2 с после
+  // конца слушания запроса, звук не обрабатывается, а движок сбрасывается.
+  // Вызывать можно из любого потока.
+  static void SetRobotSpeaking(bool speaking);
+  static void NoteListenEnded();
 
 private:
   // Приём «pimpl»: детали спрятаны в .cpp, поэтому заголовок не тянет за собой
